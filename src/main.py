@@ -55,7 +55,7 @@ def main():
     # wont work
     logging.warning(f'Log level set to {args.verbosity}')
 
-    for path in ['config.ini', '/etc/OpsecAnonChatBot/config.ini']:
+    for path in ['config.ini', '/etc/anon_chat_bot/config.ini']:
         try:
             config = ConfigObj(path)
             if config.keys():
@@ -68,7 +68,7 @@ def main():
         logger.error(
             "Config file is empty, non existent or has wrong "
             "permissions make sure that either config.ini or "
-            "/etc/OpsecAnonChatBot/config.ini exist and have correct"
+            "/etc/anon_chat_bot/config.ini exist and have correct"
             "permissions")
         sys.exit(1)
 

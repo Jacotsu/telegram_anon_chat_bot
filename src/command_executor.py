@@ -161,7 +161,7 @@ class CommandExecutor:
                     update.message.from_user.id,
                     update.message.chat.id)
         user_permissions = user.permissions
-        msg_string = 'OpsecAnonChatBot help page: \n'
+        msg_string = 'anon_chat_bot help page: \n'
         for cmd_name, cmd_dict in self.commands.items():
             if cmd_dict['permissions_required'] in user_permissions:
                 msg_string += f'*{cmd_name}*:\nusage: `{cmd_dict["usage"]}`\n'\
