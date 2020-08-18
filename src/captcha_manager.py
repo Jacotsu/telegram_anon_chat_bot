@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: UTF-8 -*-
 #
-# OpsecAnonChatBot is a telegram bot whose main function is to manage an
+# anon_chat_bot is a telegram bot whose main function is to manage an
 # anonymous chat lounge
 # Copyright (C) <2020>  <jacotsu>
 #
