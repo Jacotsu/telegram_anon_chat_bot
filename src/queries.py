@@ -201,18 +201,34 @@ GET_USER_PERMISSIONS = '''
 # ----------------------- [CAPTCHA] --------------------------
 
 SET_USER_FAILED_ATTEMPTS_FROM_CAPTCHA_STATUS = '''
-    REPLACE INTO captcha_status (user_id, failed_attempts)
-    VALUES (:user_id, :failed_attempts);
+    WITH new (user_id, failed_attempts) AS (VALUES(:user_id, :failed_attempts))
+    REPLACE INTO captcha_status (user_id, failed_attempts,
+        total_failed_attempts, passed)
+    SELECT new.user_id, new.failed_attempts, old.total_failed_attempts,
+        old.passed
+    FROM new
+    LEFT JOIN captcha_status AS old USING (user_id);
 '''
 
 SET_USER_TOTAL_FAILED_ATTEMPTS_FROM_CAPTCHA_STATUS = '''
-    REPLACE INTO captcha_status (user_id, total_failed_attempts)
-    VALUES (:user_id, :total_failed_attempts);
+    WITH new (user_id, total_failed_attempts) AS (VALUES(:user_id,
+        :total_failed_attempts))
+    REPLACE INTO captcha_status (user_id, failed_attempts,
+        total_failed_attempts, passed)
+    SELECT new.user_id, old.failed_attempts, new.total_failed_attempts,
+        old.passed
+    FROM new
+    LEFT JOIN captcha_status AS old USING (user_id);
 '''
 
 SET_USER_PASSED_FROM_CAPTCHA_STATUS = '''
-    REPLACE INTO captcha_status (user_id, passed)
-    VALUES (:user_id, :passed);
+    WITH new (user_id, passed) AS (VALUES(:user_id, :passed))
+    REPLACE INTO captcha_status (user_id, failed_attempts,
+        total_failed_attempts, passed)
+    SELECT new.user_id, old.failed_attempts, old.total_failed_attempts,
+        new.passed
+    FROM new
+    LEFT JOIN captcha_status AS old USING (user_id);
 '''
 
 GET_USER_FAILED_ATTEMPTS_FROM_CAPTCHA_STATUS = '''
@@ -234,18 +250,37 @@ GET_USER_PASSED_FROM_CAPTCHA_STATUS = '''
 '''
 
 SET_USER_CURRENT_CAPTCHA_VALUE = '''
-    REPLACE INTO active_captcha_storage (user_id, current_value)
-    VALUES (:user_id, :current_value);
+    WITH new (user_id, current_value) AS (VALUES(:user_id,
+        :current_value))
+    REPLACE INTO active_captcha_storage (user_id, current_value,
+        unix_creation_time_date, unix_last_try_time_date)
+    SELECT new.user_id, new.current_value, old.unix_creation_time_date,
+        old.unix_last_try_time_date
+    FROM new
+    LEFT JOIN active_captcha_storage AS old USING (user_id);
 '''
 
 SET_USER_CURRENT_CAPTCHA_CREATION_TIME_DATE = '''
-    REPLACE INTO active_captcha_storage (user_id, unix_creation_time_date)
-    VALUES (:user_id, :unix_creation_time_date);
+    WITH new (user_id, unix_creation_time_date) AS (VALUES(:user_id,
+        :unix_creation_time_date))
+    REPLACE INTO active_captcha_storage (user_id, current_value,
+        unix_creation_time_date, unix_last_try_time_date)
+    SELECT new.user_id, old.current_value, new.unix_creation_time_date,
+        old.unix_last_try_time_date
+    FROM new
+    LEFT JOIN active_captcha_storage AS old USING (user_id);
 '''
 
 SET_USER_CURRENT_CAPTCHA_LAST_TRY_TIME_DATE = '''
-    REPLACE INTO active_captcha_storage (user_id, unix_last_try_time_date)
-    VALUES (:user_id, :unix_last_try_time_date);
+
+    WITH new (user_id, unix_last_try_time_date) AS (VALUES(:user_id,
+        :unix_last_try_time_date))
+    REPLACE INTO active_captcha_storage (user_id, current_value,
+        unix_creation_time_date, unix_last_try_time_date)
+    SELECT new.user_id, old.current_value, old.unix_creation_time_date,
+        new.unix_last_try_time_date
+    FROM new
+    LEFT JOIN active_captcha_storage AS old USING (user_id);
 '''
 GET_USER_CURRENT_CAPTCHA_VALUE = '''
     SELECT (current_value)
