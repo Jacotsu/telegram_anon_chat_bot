@@ -1,1 +1,0 @@
-- [ ] Store hashes of user_ids to make database anonymous by default
