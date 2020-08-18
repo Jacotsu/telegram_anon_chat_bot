@@ -63,7 +63,10 @@ class CommandExecutor:
                 'min_args': 0,
                 'max_args': 0,
                 'filters': UnbannedUsersFilter(self._db_man) &
-                PassedCaptchaFilter(self._db_man, self._captcha_manager),
+                PassedCaptchaFilter(
+                    self._db_man,
+                    self._captcha_manager
+                ),
                 'callback': self.join
             },
             'quit': {
@@ -73,27 +76,30 @@ class CommandExecutor:
                 'min_args': 0,
                 'max_args': 0,
                 'filters': ActiveUsersFilter(self._db_man) &
-                UnbannedUsersFilter(self._db_man),
+                UnbannedUsersFilter(self._db_man) &
+                PassedCaptchaFilter(self._db_man, self._captcha_manager),
                 'callback': self.quit
             },
             'help': {
                 'description': 'Shows the help page',
-                'permissions_required': Permissions.NONE,
+                'permissions_required': Permissions.SEND_CMD,
                 'usage': '/help',
                 'min_args': 0,
                 'max_args': 0,
                 'filters': ActiveUsersFilter(self._db_man) &
-                UnbannedUsersFilter(self._db_man),
+                UnbannedUsersFilter(self._db_man) &
+                PassedCaptchaFilter(self._db_man, self._captcha_manager),
                 'callback': self.help
             },
             'ping': {
                 'description': 'Shows if the bot is online',
-                'permissions_required': Permissions.NONE,
+                'permissions_required': Permissions.SEND_CMD,
                 'usage': '/ping',
                 'min_args': 0,
                 'max_args': 0,
                 'filters': ActiveUsersFilter(self._db_man) &
-                UnbannedUsersFilter(self._db_man),
+                UnbannedUsersFilter(self._db_man) &
+                PassedCaptchaFilter(self._db_man, self._captcha_manager),
                 'callback': self.ping
             }
         }
@@ -118,26 +124,30 @@ class CommandExecutor:
                                      self.commands.items()))
         bot.set_my_commands([*public_commands])
 
-
     # General commands
     @log_action(logger)
     def join(self, update, context):
         tg_user = update.message.from_user
         # Creates a new user if it doesn't exist
+        usual = self._db_man.user_exists(tg_user.id)
 
-        if self._db_man.user_exists(tg_user.id):
-            logger.info(
-                f'{user_log_str(update)} rejoined the chat'
-            )
-            update.message.reply_text('Welcome back')
+        user = User(self._db_man, tg_user.id, self._default_permissions)
+        print(f'{user.permissions} \n\n\n\n\n\n\n\n\n\n\n\ ')
+
+        if usual:
+            if not user.is_active:
+                logger.info(
+                    f'{user_log_str(update)} rejoined the chat'
+                )
+                update.message.reply_text('Welcome back')
+                user.join()
         else:
             logger.info(
                 f'{user_log_str(update)} joined the chat'
             )
             update.message.reply_text('Congratulations you have joined the'
-                                      'opsec chat')
-
-        User(self._db_man, tg_user.id, self._default_permissions).join()
+                                      'chat')
+            user.join()
 
     @log_action(logger)
     def quit(self, update, context):

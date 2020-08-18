@@ -168,7 +168,6 @@ class DatabaseManager:
             queries.CREATE_USER,
             {'user_id': user_id}
         )
-        self.log_join(user_id, datetime.utcnow())
         logger.debug(f'Created user {user_id}')
 
     def log_join(self, user_id: int,
@@ -403,3 +402,11 @@ class DatabaseManager:
 
 # -------------------------------- [ROLES] ------------------------------------
 
+    def register_role(self, role):
+        raise NotImplementedError
+
+    def delete_role(self, role):
+        raise NotImplementedError
+
+    def set_role(self, user_id, role):
+        raise NotImplementedError

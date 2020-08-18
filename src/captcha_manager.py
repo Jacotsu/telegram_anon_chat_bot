@@ -32,8 +32,12 @@ logger = logging.getLogger(__name__)
 
 
 class MaxCaptchaTriesError(Exception):
-    def __init__(self, end_date: datetime, *args, **kwargs):
+    def __init__(self, reason, is_ban=False, is_kick=False, end_date=None,
+                 *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.reason = reason
+        self.is_ban = is_ban
+        self.is_kick = is_kick
         self.end_date = end_date
 
 
@@ -47,12 +51,18 @@ class CaptchaManager:
         self._db_man = database_manager
 
     def start_captcha_session(self, user: User):
-        if user.captcha_status.failed_attempts % int(self._config["Captcha"]
-           ["FailuresToGenerateNewCaptcha"]) == 0:
+        captcha_status = user.captcha_status
+        creation_time = captcha_status.creation_time
+        now = datetime.utcnow()
+        time_delta = timedelta(seconds=timeparse(self._config["Captcha"]
+                                                 ["ExpirationTime"]))
+
+        if user.captcha_status.failed_attempts % \
+           int(self._config["Captcha"]["FailuresToGenerateNewCaptcha"]) == 0 \
+           or now - creation_time > time_delta:
             self._generate_captcha_value(user)
-            return self.get_captcha_image(user)
-        else:
-            return None
+
+        return self.get_captcha_image(user)
 
     def submit_captcha(self, user: User, value: str):
         captcha_status = user.captcha_status
@@ -61,12 +71,14 @@ class CaptchaManager:
         logger.debug(f'{user} submitted {value} actual value is '
                      f'{user.captcha_status.current_value}')
 
+        action_for_failure = self._config["Captcha"]["ActionOnFailedCaptcha"]
+        ban_time_delta = self._config["Captcha"]["FailedCaptchaBanDuration"]
+
         time_delta = timedelta(seconds=timeparse(self._config["Captcha"]
                                                  ["TimeDelayBetweenAttempts"]))
 
         if now - last_attempt > time_delta:
             captcha_status.last_try_time = now
-            print(captcha_status)
             if captcha_status.current_value == value.upper():
                 captcha_status.failed_attempts = 0
                 captcha_status.passed = True
@@ -78,19 +90,36 @@ class CaptchaManager:
                    ["MaxCaptchaTries"]):
                     captcha_status.failed_attempts = 0
                     captcha_status.current_value = ''
-                    raise MaxCaptchaTriesError(now + time_delta)
+
+                    if action_for_failure == 'ban':
+                        user.ban(end_date=now + ban_time_delta,
+                                 reason='Too many captcha failures')
+                        raise MaxCaptchaTriesError(
+                            f'You have been banned until {now+time_delta}'
+                            ' for failing the captcha'
+                            'authentication too many times',
+                            is_ban=True,
+                            end_date=now + ban_time_delta
+                        )
+                        raise MaxCaptchaTriesError(now + time_delta)
+                    elif action_for_failure == 'kick':
+                        user.kick()
+                        raise MaxCaptchaTriesError(
+                            'You have been kicked for failing the captcha'
+                            'authentication too many times',
+                            is_kick=True
+                        )
         else:
             raise CaptchaFloodError()
 
-    def _generate_captcha_value(self, user: User):
+    def _generate_captcha_value(self, user: User, length: int = 8):
         user.captcha_status.current_value = \
                 ''.join(random.choices(string.ascii_uppercase +
-                                       string.digits, k=8))
+                                       string.digits, k=length))
         user.captcha_status.creation_time = datetime.utcnow()
 
     def get_captcha_image(self, user: User):
         image = ImageCaptcha(width=400, height=200)
-        print(user.captcha_status.current_value + '\n\n\n\n\n\n\n\n')
         logger.debug('Generate captcha image from '
                      f'{user.captcha_status.current_value}')
         return image.generate(user.captcha_status.current_value)

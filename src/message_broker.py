@@ -43,7 +43,11 @@ class MessageBroker:
             MessageHandler(
                 UnbannedUsersFilter(self._db_man) &
                 ~Filters.command &
-                PassedCaptchaFilter(self._db_man, self._captcha_manager),
+                PassedCaptchaFilter(
+                    self._db_man,
+                    self._captcha_manager,
+                    lambda x: User(self._db_man, x.message.from_user.id).join()
+                ),
                 callback=self.process_message))
 
     def process_message(self, update, context):
@@ -69,8 +73,7 @@ class MessageBroker:
         else:
             effective_users = filter(lambda x:
                                      permissions in x.permissions and
-                                     x.captcha_status.passed
-                                     and x.is_active,
+                                     x.captcha_status.passed,
                                      self._db_man.get_active_users())
 
         for user in effective_users:

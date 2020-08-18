@@ -68,6 +68,8 @@ class Permissions(IntFlag, metaclass=CustomEnumMetaForCaseInsensiviSubscript):
     EMBED_LINKS = auto()
     # Permission to send polls
     SEND_POLLS = auto()
+    # Permission to send commands
+    SEND_CMD = auto()
     # Permission to bypass captcha
     BYPASS_CAPTCHA = auto()
 

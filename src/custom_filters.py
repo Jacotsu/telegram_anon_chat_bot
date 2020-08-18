@@ -100,10 +100,12 @@ class PassedCaptchaFilter(BaseFilter):
     captcha verification
     '''
 
-    def __init__(self, database_manager, captcha_manager):
+    def __init__(self, database_manager, captcha_manager,
+                 on_success_callback=None):
         self._db_man = database_manager
         self.update_filter = True
         self._captcha_manager = captcha_manager
+        self._on_success_callback = on_success_callback
 
     def filter(self, update):
         tg_user = update.message.from_user
@@ -122,6 +124,9 @@ class PassedCaptchaFilter(BaseFilter):
                         logger.info(f'{user_log_str(update)} has passed the '
                                     'captcha challenge')
                         update.message.reply_text('You passed the captcha')
+                        if self._on_success_callback:
+                            self._on_success_callback(update)
+                        return True
                     else:
                         update.message.reply_text('Wrong captcha')
                         max_tries = self._captcha_manager._config["Captcha"]\
@@ -133,13 +138,16 @@ class PassedCaptchaFilter(BaseFilter):
                             f'{max_tries})')
                 except MaxCaptchaTriesError as e:
                     update.message.reply_text(
-                        'You have been banned until'
-                        f'{e.end_date} for failing the captcha auth too many'
-                        'times'
+                        e.reason
                     )
-                    logger.info(f'{user_log_str(update)} has been banned until'
-                                f'{e.end_date} for failing captcha auth too'
-                                'may times')
+                    if e.is_ban:
+                        logger.info(f'{user_log_str(update)} has been banned '
+                                    f'until {e.end_date} for failing captcha '
+                                    'auth too may times')
+                    elif e.is_kick:
+                        logger.info(f'{user_log_str(update)} has been kicked '
+                                    'for failing captcha '
+                                    'auth too may times')
                 except CaptchaFloodError:
                     logger.info(f'{user_log_str(update)} is flooding the'
                                 'captcha')
@@ -151,17 +159,12 @@ class PassedCaptchaFilter(BaseFilter):
             elif not user.captcha_status.current_value and \
                     user.captcha_status.passed:
                 return True
-
             captcha_img = self._captcha_manager.start_captcha_session(user)
-            if captcha_img:
-                logger.info(f'{user_log_str(update)} generated '
-                            f'new captcha {user.captcha_status.current_value}')
-                update.message.reply_photo(
-                    captcha_img,
-                    caption='Please complete the captcha challenge (no spaces)'
-                )
-            else:
-                update.message.reply_text(
-                    'Please complete the captcha challenge (no spaces)'
-                )
+            logger.info(f'{user_log_str(update)} generated captcha '
+                        f'{user.captcha_status.current_value}')
+            update.message.reply_photo(
+                captcha_img,
+                caption='Please complete the captcha challenge '
+                '(no spaces)'
+            )
             return False
