@@ -21,7 +21,8 @@
 
 from typing import Iterable
 import logging
-from telegram.ext import MessageHandler, Filters
+from telegram.ext import MessageHandler, Filters, messagequeue
+from telegram import Message
 from custom_filters import ActiveUsersFilter, UnbannedUsersFilter,\
         PassedCaptchaFilter
 from permissions import Permissions
@@ -39,6 +40,11 @@ class MessageBroker:
         self._updater = updater
         self._captcha_manager = captcha_manager
 
+        self._is_messages_queued_default = True
+        self._msg_queue = messagequeue.MessageQueue(
+            all_burst_limit=29,
+            all_time_limit_ms=1017)
+
         self._updater.dispatcher.add_handler(
             MessageHandler(
                 UnbannedUsersFilter(self._db_man) &
@@ -48,19 +54,19 @@ class MessageBroker:
                     self._captcha_manager,
                     lambda x: User(self._db_man, x.message.from_user.id).join()
                 ),
-                callback=self.process_message))
+                callback=self._message_callback))
 
-    def process_message(self, update, context):
+    def _message_callback(self, update, context):
         # Do things
-        self.send_message(update.message.text)
+        self.process_message(update.message)
 
-    def send_message(self,
-                     message,
-                     users: Iterable[User] = None,
-                     permissions: Permissions = Permissions.RECEIVE):
+    def process_message(
+            self,
+            message,
+            users: Iterable[User] = None,
+            permissions: Permissions = Permissions.RECEIVE):
         '''
         @param permissions The permissions required to receive the message
-
         '''
         # Filter banned users, users that stopped the bot and those who
         # didn't pass the captcha
@@ -78,4 +84,24 @@ class MessageBroker:
 
         for user in effective_users:
             logger.debug(f'Relaying message to {user.user_id}')
-            self._updater.bot.send_message(user.user_id, message)
+            self._send_or_forward_msg(user, message)
+
+    @messagequeue.queuedmessage
+    def _send_or_forward_msg(self, user, message):
+        if isinstance(message, Message):
+            if Permissions.VIEW_CLEAR_MSGS in user.permissions:
+                self._updater.bot.forward_message(
+                    chat_id=user.user_id,
+                    from_chat_id=message.chat_id,
+                    message_id=message.message_id
+                )
+            else:
+                self._updater.bot.send_message(
+                    user.user_id,
+                    message
+                )
+        else:
+            self._updater.bot.send_message(
+                user.user_id,
+                message
+            )
