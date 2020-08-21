@@ -119,6 +119,9 @@ class Permissions(IntFlag, metaclass=CustomEnumMetaForCaseInsensiviSubscript):
     RESET_CAPTCHA = auto()
     BYPASS_CAPTCHA = auto()
 
+    # ----------------------------- [ANTIFLOOD] -------------------------------
+    BYPASS_ANTIFLOOD = auto()
+
     # ------------------------ [GROUPED PERMISSIONS] --------------------------
     SEND_TEXT = SEND_MENTION | SEND_HASHTAG | SEND_CASHTAG |\
         SEND_PHONE_NUMBER | SEND_UNDERLINE | SEND_EMAIL | SEND_BOLD |\
