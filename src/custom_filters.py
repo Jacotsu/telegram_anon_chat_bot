@@ -48,14 +48,27 @@ class AntiFloodFilter(BaseFilter):
     def __init__(self, database_manager, config):
         super().__init__()
         self._db_man = database_manager
-        self._default_time_delta = timeparse(
+        self._default_time_delta = timedelta(seconds=timeparse(
             config["AntiFlood"]["MinimumDelayBetweenMessages"]
-        )
+        ))
         self._last_message_dict = {}
+        self._cleanup_time_delta = timedelta(hours=1)
+        self._inactivity_cleanup_time_delta = timedelta(minutes=10)
+        self._last_cleanup_time = datetime.utcnow()
 
     def filter(self, message):
         tg_user = message.from_user
         user = User(self._db_man, tg_user.id)
+        now = datetime.utcnow()
+
+        if now - self._last_cleanup_time > self._cleanup_time_delta:
+            self._last_message_dict = {
+                user_id: data for (user_id, data) in
+                self._last_message_dict.items()
+                if now - data['last_msg_time'] <
+                self._inactivity_cleanup_time_delta
+            }
+
         if Permissions.BYPASS_ANTIFLOOD in user.permissions:
             return True
         else:
@@ -64,20 +77,20 @@ class AntiFloodFilter(BaseFilter):
             except ValueError:
                 delay = self._default_time_delta
 
-            now = datetime.utcnow()
             try:
-                elapsed_time = now - self._last_message_dict[tg_user.id]
+                elapsed_time = now - \
+                        self._last_message_dict[tg_user.id]['last_msg_time']
                 if elapsed_time > delay:
                     # sent_warning is necessary to avoid a DOS by malicious
                     # users that try to flood anyway
                     self._last_message_dict[tg_user.id] = {
-                        'last_msg': now,
+                        'last_msg_time': now,
                         'sent_warning': False
                     }
                     return True
             except KeyError:
                 self._last_message_dict[tg_user.id] = {
-                    'last_msg': now,
+                    'last_msg_time': now,
                     'sent_warning': False
                 }
                 return True
@@ -85,7 +98,7 @@ class AntiFloodFilter(BaseFilter):
             if not self._last_message_dict[tg_user.id]['sent_warning']:
                 logger.warning(f'{user_log_str(message)} is trying to flood '
                                'the chat')
-                message.reply_text('You must waith {delay - elapsed_time} '
+                message.reply_text(f'You must waith {delay - elapsed_time} '
                                    'before sending another message or command')
             return False
 
