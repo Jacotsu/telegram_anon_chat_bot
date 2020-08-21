@@ -85,6 +85,8 @@ class AntiFloodFilter(BaseFilter):
                 return True
 
             if not self._last_message_dict[tg_user.id]['sent_warning']:
+                logger.info(f'{user_log_str(message)} is trying to flood '
+                            'the chat')
                 message.reply_text('You must waith {delay - elapsed_time} '
                                    'before sending another message or command')
             return False
