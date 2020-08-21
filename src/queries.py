@@ -51,10 +51,9 @@ CREATE_PERMISSIONS_TABLE = '''
 
 CREATE_ROLES_TABLE = '''
     CREATE TABLE IF NOT EXISTS roles (
-        role_id INTEGER PRIMARY KEY,
-        role_name TEXT,
+        role_name TEXT PRIMARY KEY,
         role_power INTEGER NOT NULL DEFAULT 0,
-        permissions INTEGER NOT NULL DEFAULT 0
+        role_permissions INTEGER NOT NULL DEFAULT 0
     );
 '''
 
@@ -62,17 +61,18 @@ CREATE_ROLES_TABLE = '''
 CREATE_USER_ASSIGNED_ROLES = '''
     CREATE TABLE IF NOT EXISTS assigned_roles (
         user_id INTEGER PRIMARY KEY,
-        role_id INTEGER,
+        role_name TEXT NOT NULL,
         FOREIGN KEY(user_id) REFERENCES users(user_id),
-        FOREIGN KEY(role_id) REFERENCES roles(role_id)
+        FOREIGN KEY(role_name) REFERENCES roles(role_name)
     ) WITHOUT ROWID;
 '''
 
 CREATE_CAPTCHA_LOG_TABLE = '''
     CREATE TABLE IF NOT EXISTS captcha_status (
         user_id INTEGER PRIMARY KEY,
-        failed_attempts INTEGER NOT NULL DEFAULT 0,
-        total_failed_attempts INTEGER NOT NULL DEFAULT 0,
+        failed_attempts INTEGER NOT NULL DEFAULT 0 CHECK(failed_attempts >= 0),
+        total_failed_attempts INTEGER NOT NULL DEFAULT 0
+        CHECK(total_failed_attempts >= failed_attempts),
         passed INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY(user_id) REFERENCES users(user_id)
     ) WITHOUT ROWID;
@@ -83,7 +83,8 @@ CREATE_ACTIVE_CAPTCHA_TABLE = '''
         user_id INTEGER PRIMARY KEY,
         current_value TEXT NOT NULL DEFAULT '',
         unix_creation_time_date INTEGER NOT NULL DEFAULT 0,
-        unix_last_try_time_date INTEGER NOT NULL DEFAULT 0,
+        unix_last_try_time_date INTEGER NOT NULL DEFAULT 0
+        CHECK(unix_last_try_time_date >= unix_creation_time_date),
         FOREIGN KEY(user_id) REFERENCES users(user_id)
     ) WITHOUT ROWID;
 '''
@@ -92,11 +93,22 @@ CREATE_BAN_LOG_TABLE = '''
     CREATE TABLE IF NOT EXISTS ban_log (
         user_id INTEGER,
         unix_start_date INTEGER NOT NULL,
-        unix_end_date INTEGER NOT NULL DEFAULT 9223372036854775807,
+        unix_end_date INTEGER NOT NULL DEFAULT 9223372036854775807
+        CHECK(unix_end_date >= unix_start_date),
         reason TEXT DEFAULT "",
         FOREIGN KEY(user_id) REFERENCES users(user_id)
     );
 '''
+
+# Delay is stored in milliseconds
+CREATE_CHAT_DELAYS_TABLE = '''
+    CREATE TABLE IF NOT EXISTS chat_delays (
+        user_id INTEGER PRIMARY KEY,
+        chat_delay INTEGER NOT NULL DEFAULT 200 CHECK(chat_delay >= 0),
+        FOREIGN KEY(user_id) REFERENCES users(user_id)
+    ) WITHOUT ROWID;
+'''
+
 
 # ----------------------------[VIEWS CREATION]---------------------------------
 
@@ -328,14 +340,86 @@ INSERT_JOIN_ENTRY = '''
 
 # ------------------------ [ROLES MANAGEMENT] ---------------------------------
 
-CREATE_UPDATE_ROLE = '''
+CREATE_DEFAULT_ROLE = '''
+    REPLACE INTO roles (role_name, role_power, role_permissions)
+    VALUES ('default', 0, 0);
+'''
 
+CREATE_UPDATE_ROLE = '''
+    REPLACE INTO roles (role_name, role_power, role_permissions)
+    VALUES (:role_name, :role_power, :role_permissions);
 '''
 
 DELETE_ROLE = '''
-
+    DELETE FROM roles
+    WHERE role_name = :role_name;
 '''
 
-SET_ROLE = '''
-
+SET_USER_ROLE = '''
+    REPLACE INTO assigned_roles(user_id, role_name)
+    VALUES (:user_id, :role_name);
 '''
+
+GET_USER_ROLE = '''
+    SELECT role_name
+    FROM assigned_roles
+    WHERE user_id = :user_id;
+'''
+
+GET_USERS_BY_ROLE = '''
+    SELECT user_id
+    FROM assigned_roles
+    WHERE role_name = :role_name;
+'''
+
+GET_AVAILABLE_ROLES = '''
+    SELECT role_name
+    FROM roles;
+'''
+
+GET_ROLE_PERMISSIONS = '''
+    SELECT role_permissions
+    FROM roles
+    WHERE role_name = :role_name;
+'''
+
+GET_ROLE_POWER = '''
+    SELECT role_power
+    FROM roles
+    WHERE role_name = :role_name;
+'''
+
+SET_ROLE_PERMISSIONS = '''
+    WITH new (role_name, role_permissions) AS (VALUES(:role_name,
+        :permissions))
+    REPLACE INTO roles (role_name, role_power, role_permissions)
+    SELECT new.role_name, old.role_power, new.role_permissions
+    FROM new
+    LEFT JOIN roles AS old USING (role_name);
+'''
+
+SET_ROLE_POWER = '''
+    WITH new (role_name, role_power) AS (VALUES(:role_name, :role_power))
+    REPLACE INTO roles (role_name, role_power, role_permissions)
+    SELECT new.role_name, new.role_power, old.role_permissions
+    FROM new
+    LEFT JOIN roles AS old USING (role_name);
+'''
+
+# ----------------------------[ANTIFLOOD]---------------------------
+
+GET_USER_CHAT_DELAY = '''
+    SELECT chat_delay
+    FROM chat_delays
+    WHERE user_id = :user_id;
+'''
+
+SET_USER_CHAT_DELAY = '''
+    REPLACE INTO chat_delays (user_id, chat_delay)
+    VALUES (:user_id, :chat_delay);
+'''
+RESET_USER_CHAT_DELAY = '''
+    DELETE FROM chat_delays
+    WHERE user_id = :user_id;
+'''
+
