@@ -36,7 +36,8 @@ class BotManager:
         self._captcha_manager = CaptchaManager(config, self._db_man)
         self._msg_broker = MessageBroker(self._updater,
                                          self._db_man,
-                                         self._captcha_manager)
+                                         self._captcha_manager,
+                                         self._config)
         self._cmd_executor = CommandExecutor(
             self._config,
             self._updater,
@@ -69,13 +70,13 @@ class BotManager:
             else:
                 raise ValueError("The webhook UrlPath is empty")
 
-        self._msg_broker.send_message('Bot started')
+        self._msg_broker.broadcast_message('Bot started')
 
     def stop(self):
         '''
         Stops the bot
         '''
-        self._msg_broker.send_message('Bot stopped')
+        self._msg_broker.broadcast_message('Bot stopped')
         self._updater.stop()
         logger.info("Bot stopped")
 
