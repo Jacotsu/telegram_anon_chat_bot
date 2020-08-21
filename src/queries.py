@@ -110,6 +110,19 @@ CREATE_CHAT_DELAYS_TABLE = '''
 '''
 
 
+CREATE_MESSAGES_TABLE = '''
+    CREATE TABLE IF NOT EXISTS message_log (
+        sender_id INTEGER,
+        receiver_id INTEGER,
+        unix_sent_date INTEGER NOT NULL,
+        sender_message_id INTEGER NOT NULL,
+        receiver_message_id = INTEGER NOT NULL
+        FOREIGN KEY(sender_id) REFERENCES users(user_id)
+        FOREIGN KEY(receiver_id) REFERENCES users(user_id)
+    );
+'''
+
+
 # ----------------------------[VIEWS CREATION]---------------------------------
 
 # Selects only the users where their joined date is more recent than their
@@ -406,7 +419,7 @@ SET_ROLE_POWER = '''
     LEFT JOIN roles AS old USING (role_name);
 '''
 
-# ----------------------------[ANTIFLOOD]---------------------------
+# ------------------------------- [ANTIFLOOD] ---------------------------------
 
 GET_USER_CHAT_DELAY = '''
     SELECT chat_delay
@@ -423,3 +436,22 @@ RESET_USER_CHAT_DELAY = '''
     WHERE user_id = :user_id;
 '''
 
+# ------------------------------ [CHAT PURGE] ---------------------------------
+
+REGISTER_MESSAGE = '''
+    INSERT INTO message_log(sender_id, receiver_id, unix_sent_date,
+        sender_message_id, receiver_message_id)
+    VALUES (:sender_id, :receiver_id, :unix_sent_date, :sender_message_id,
+    :receiver_message_id);
+'''
+
+GET_MESSAGES_TO_PURGE = '''
+    SELECT receiver_id, receiver_message_id
+    FROM message_log
+    WHERE unix_sent_date < :unix_utc_timedate;
+'''
+
+PURGE_MESSAGES = '''
+    DELETE FROM message_log
+    WHERE unix_sent_date < :unix_utc_timedate;
+'''

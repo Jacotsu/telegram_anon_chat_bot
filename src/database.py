@@ -59,7 +59,8 @@ class DatabaseManager:
                     queries.CREATE_CAPTCHA_LOG_TABLE,
                     queries.CREATE_ACTIVE_CAPTCHA_TABLE,
                     queries.CREATE_BAN_LOG_TABLE,
-                    queries.CREATE_CHAT_DELAYS_TABLE
+                    queries.CREATE_CHAT_DELAYS_TABLE,
+                    queries.CREATE_MESSAGES_TABLE
                 ]
 
                 view_creation_queries = [
@@ -504,3 +505,34 @@ class DatabaseManager:
                 queries.RESET_USER_CHAT_DELAY,
                 {'user_id': user_id}
             )
+
+# -------------------------------- [PURGE] -----------------------------------
+
+    def purge_messages(self, utc_date: datetime):
+        self._execute_simple_set_query(
+                queries.PURGE_MESSAGES,
+                {'unix_utc_timedate': int(utc_date.replace(tzinfo=timezone.utc)
+                                          .timestamp()*1E6)}
+        )
+
+    def get_messages_to_purge(self, sent_date: datetime):
+        cursor = self._execute_simple_get_query(
+                queries.GET_MESSAGES_TO_PURGE,
+                {'unix_utc_timedate': int(sent_date
+                                          .replace(tzinfo=timezone.utc)
+                                          .timestamp()*1E6)}
+        )
+        return cursor
+
+    def register_message(self, sender_id: int, receiver_id: int,
+                         message_id: int, receiver_message_id: int,
+                         sent_date: datetime):
+        self._execute_simple_set_query(
+                queries.REGISTER_MESSAGE,
+                {'sender_id': sender_id,
+                'receiver_id': receiver_id,
+                'unix_sent_date': int(sent_date.replace(tzinfo=timezone.utc)
+                                      .timestamp()*1E6),
+                'sender_message_id': message_id,
+                'receiver_message_id': receiver_message_id}
+        )
