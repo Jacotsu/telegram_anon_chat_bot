@@ -39,8 +39,6 @@ class AnonPollFilter(Filters._Poll):
         return super().filter(message) and bool(message.poll.is_anonymous)
 
 
-
-
 class SimpleTextFilter(BaseFilter):
     def filter(self, message):
         return bool(message.text)
@@ -90,6 +88,7 @@ class AntiFloodFilter(BaseFilter):
                 message.reply_text('You must waith {delay - elapsed_time} '
                                    'before sending another message or command')
             return False
+
 
 class ActiveUsersFilter(BaseFilter):
     '''
