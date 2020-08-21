@@ -24,6 +24,10 @@ from operator import or_ as _or_
 from functools import reduce
 
 
+class InvalidPermissionsError(Exception):
+    pass
+
+
 class CustomEnumMetaForCaseInsensiviSubscript(EnumMeta):
     # https://stackoverflow.com/questions/24716723/
     # issue-extending-enum-and-redefining-getitem
@@ -51,45 +55,71 @@ class Permissions(IntFlag, metaclass=CustomEnumMetaForCaseInsensiviSubscript):
     # Basic permissions
     # Permission to receive message
     RECEIVE = auto()
-    # Permission to send text messages
-    SEND_TEXT = auto()
-    #ALL_TYPES = [
-    #    HASHTAG, CASHTAG, PHONE_NUMBER, BOT_COMMAND, URL,
-    #    EMAIL, PRE, TEXT_LINK, TEXT_MENTION
-    #]
 
-    # Permission to send URLs
+    # ----------------------------- [TEXT PERMISSIONS] ------------------------
+
+    SEND_SIMPLE_TEXT = auto()
+    SEND_MENTION = auto()
+    SEND_HASHTAG = auto()
+    SEND_CASHTAG = auto()
+    SEND_PHONE_NUMBER = auto()
+    SEND_EMAIL = auto()
+    SEND_BOLD = auto()
+    SEND_ITALIC = auto()
+    SEND_CODE = auto()
+    SEND_UNDERLINE = auto()
+    SEND_STRIKETHROUGH = auto()
+
+    SEND_CODE_BLOCK = auto()
     SEND_URL = auto()
-    # Permission to send media
-    SEND_MEDIA = auto()
-    # Permission to send stickers and gifs
-    SEND_STICKERS_GIFS = auto()
-    # Permission to embed links
-    EMBED_LINKS = auto()
-    # Permission to send polls
-    SEND_POLLS = auto()
-    # Permission to send commands
+    SEND_TEXT_LINK = auto()
+    SEND_TEXT_MENTION = auto()
+
+    # ---------------------------- [MEDIA PERMISSIONS] ------------------------
+
+    SEND_ANIMATION = auto()
+    SEND_PHOTO = auto()
+    SEND_CONTACT = auto()
+    SEND_DICE = auto()
+    SEND_DOCUMENT = auto()
+    SEND_LOCATION = auto()
+    SEND_VIDEO = auto()
+    SEND_VIDEO_NOTE = auto()
+    SEND_AUDIO = auto()
+    SEND_STICKER = auto()
+
+    # Non anon polls are not accepted
+    SEND_ANON_POLL = auto()
+
+    # -------------------------------- [COMMANDS] -----------------------------
+
     SEND_CMD = auto()
-    # Permission to bypass captcha
+
+    # ---------------------------- [LOGS MANAGEMENT] --------------------------
+
+    VIEW_LOGS = auto()
+    USER_INFO = auto()
+
+    # ---------------------------- [ADMINISTRATION] ---------------------------
+
+    KICK = auto()
+    BAN = auto()
+    VIEW_CLEAR_MSGS = auto()
+
+    # ------------------------------- [ROLES] ---------------------------------
+
+    SET_ROLE = auto()
+    EDIT_ROLE = auto()
+    CREATE_ROLE = auto()
+    DELETE_ROLE = auto()
+
+    # ------------------------------ [CAPTCHA] --------------------------------
+
+    WAIVE_CAPTCHA = auto()
+    RESET_CAPTCHA = auto()
     BYPASS_CAPTCHA = auto()
 
-    # Chat management
-    # Permission to pin messages
-    PIN_MESSAGES = auto()
-    # Permission to view logs
-    VIEW_LOGS = auto()
-    # Permission to view deanonimized messages
-    VIEW_CLEAR_MSGS = auto()
-    # Permission to kick
-    KICK = auto()
-    # Permission to ban
-    BAN = auto()
-
-    # Administration
-    # Permission to set role
-    SET_ROLE = auto()
-    # Permission to waive captcha
-    WAIVE_CAPTCHA = auto()
-    # Permission to reset captcha
-    RESET_CAPTCHA = auto()
-
+    # ------------------------ [GROUPED PERMISSIONS] --------------------------
+    SEND_TEXT = SEND_MENTION | SEND_HASHTAG | SEND_CASHTAG |\
+        SEND_PHONE_NUMBER | SEND_UNDERLINE | SEND_EMAIL | SEND_BOLD |\
+        SEND_ITALIC | SEND_CODE | SEND_STRIKETHROUGH

@@ -21,6 +21,8 @@
 
 import logging
 from telegram.ext.filters import BaseFilter
+from telegram.ext import Filters
+from permissions import Permissions, InvalidPermissionsError
 from captcha_manager import CaptchaManager, MaxCaptchaTriesError,\
         CaptchaFloodError
 from custom_dataclasses import User
@@ -28,6 +30,16 @@ from custom_logging import user_log_str
 
 
 logger = logging.getLogger(__name__)
+
+
+class AnonPollFilter(Filters._Poll):
+    def filter(self, message):
+        return super().filter(message) and bool(message.poll.is_anonymous)
+
+
+class SimpleTextFilter(BaseFilter):
+    def filter(self, message):
+        return bool(message.text)
 
 
 class ActiveUsersFilter(BaseFilter):
@@ -70,7 +82,7 @@ class UnbannedUsersFilter(BaseFilter):
             return False
 
 
-class ValidPermissionsFilter(BaseFilter):
+class MessagePermissionsFilter(BaseFilter):
     '''
     This class filters the messages/commands of users that don't have the
     necessary permissions
@@ -80,18 +92,218 @@ class ValidPermissionsFilter(BaseFilter):
         self._db_man = database_manager
         self.update_filter = True
 
+        self._filter_map = {
+
+            Permissions.SEND_SIMPLE_TEXT: {
+                'filter': Filters.entity('mention'),
+                'user_msg': 'You cannot send messages',
+                'log_msg': '{user_log_str} has tried to send a message'
+                           'with invalid permissions ({user_perm}) '
+                           '{message}'
+            },
+            Permissions.SEND_MENTION: {
+                'filter': Filters.entity('mention'),
+                'user_msg': 'You cannot mention people',
+                'log_msg': '{user_log_str} has tried to mention a user'
+                           'with invalid permissions ({user_perm}) '
+                           '{message}'
+            },
+            Permissions.SEND_HASHTAG: {
+                'filter': Filters.entity('hashtag'),
+                'user_msg': 'You cannot send hashtags',
+                'log_msg': '{user_log_str} has tried to send an '
+                           'hashtag with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_CASHTAG: {
+                'filter': Filters.entity('cashtag'),
+                'user_msg': 'You cannot send chashtags',
+                'log_msg': '{user_log_str} has tried to send a '
+                           'chashtag with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_PHONE_NUMBER: {
+                'filter': Filters.entity('phone_number'),
+                'user_msg': 'You cannot send phone numbers',
+                'log_msg': '{user_log_str} has tried to send a '
+                           'phone number with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_EMAIL: {
+                'filter': Filters.entity('email'),
+                'user_msg': 'You cannot send email addresses',
+                'log_msg': '{user_log_str} has tried to send an '
+                           'email address with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_BOLD: {
+                'filter': Filters.entity('bold'),
+                'user_msg': 'You cannot send bold text',
+                'log_msg': '{user_log_str} has tried to send '
+                           'bold text with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_ITALIC: {
+                'filter': Filters.entity('italic'),
+                'user_msg': 'You cannot send italic text',
+                'log_msg': '{user_log_str} has tried to send '
+                           'italic text with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_CODE: {
+                'filter': Filters.entity('code'),
+                'user_msg': 'You cannot send code',
+                'log_msg': '{user_log_str} has tried to send '
+                           'code with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_UNDERLINE: {
+                'filter': Filters.entity('underline'),
+                'user_msg': 'You cannot send underlined text',
+                'log_msg': '{user_log_str} has tried to send '
+                           'underlined text with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_STRIKETHROUGH: {
+                'filter': Filters.entity('strikethrough'),
+                'user_msg': 'You cannot send strikethrough text',
+                'log_msg': '{user_log_str} has tried to send '
+                           'strikethrough text with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_CODE_BLOCK: {
+                'filter': Filters.entity('pre'),
+                'user_msg': 'You cannot send code blocks',
+                'log_msg': '{user_log_str} has tried to send a '
+                           'code block with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_URL: {
+                'filter': Filters.entity('url'),
+                'user_msg': 'You cannot send urls',
+                'log_msg': '{user_log_str} has tried to send a '
+                           'url with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_TEXT_LINK: {
+                'filter': Filters.entity('text_link'),
+                'user_msg': 'You cannot send text links',
+                'log_msg': '{user_log_str} has tried to send a '
+                           'text link with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_TEXT_MENTION: {
+                'filter': Filters.entity('text_mention'),
+                'user_msg': 'You cannot send text mentions',
+                'log_msg': '{user_log_str} has tried to send a '
+                           'text mention with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_ANIMATION: {
+                'filter': Filters.animation,
+                'user_msg': 'You cannot send animations',
+                'log_msg': '{user_log_str} has tried to send an '
+                           'animation with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_PHOTO: {
+                'filter': Filters.photo,
+                'user_msg': 'You cannot send photos',
+                'log_msg': '{user_log_str} has tried to send a '
+                           'photo with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_CONTACT: {
+                'filter': Filters.contact,
+                'user_msg': 'You cannot send contacts',
+                'log_msg': '{user_log_str} has tried to send a '
+                           'contact with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_DICE: {
+                'filter': Filters.dice,
+                'user_msg': 'You cannot send dices/targets',
+                'log_msg': '{user_log_str} has tried to send a '
+                           'dice/target with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_DOCUMENT: {
+                # Mimetype filtering is possible, but unneeded right now
+                'filter': Filters.document,
+                'user_msg': 'You cannot send documents',
+                'log_msg': '{user_log_str} has tried to send a '
+                           'document with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_LOCATION: {
+                'filter': Filters.location,
+                'user_msg': 'You cannot send locations',
+                'log_msg': '{user_log_str} has tried to send a '
+                           'location with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_VIDEO: {
+                'filter': Filters.video,
+                'user_msg': 'You cannot send videos',
+                'log_msg': '{user_log_str} has tried to send a '
+                           'video with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_VIDEO_NOTE: {
+                'filter': Filters.video_note,
+                'user_msg': 'You cannot send video notes',
+                'log_msg': '{user_log_str} has tried to send a '
+                           'video note with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_AUDIO: {
+                'filter': Filters.audio,
+                'user_msg': 'You cannot send audios',
+                'log_msg': '{user_log_str} has tried to send an '
+                           'audio with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_STICKER: {
+                'filter': Filters.sticker,
+                'user_msg': 'You cannot send stickers',
+                'log_msg': '{user_log_str} has tried to send a '
+                           'sticker with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.SEND_ANON_POLL: {
+                'filter': AnonPollFilter(),
+                'user_msg': 'You cannot send hashtags',
+                'log_msg': '{user_log_str} has tried to send an '
+                           'hashtag with invalid permissions '
+                           '({user_perm}) {message}'
+            }
+        }
+
     def filter(self, update):
-        tg_user = update.message.from_user()
+        tg_user = update.message.from_user
         user = User(self._db_man, tg_user.id)
 
-        has_permissions = False
-        if has_permissions:
-            return True
-        else:
-            update.message.reply('You do not have the necessary permissions')
-            logger.debug(f'{user_log_str(update)} has tried to send a message '
-                         'with invalid permissions')
-            return False
+        for perm in Permissions:
+            try:
+                perm_data = self._filter_map[perm]
+                if perm in user.permissions:
+                    data_filter = ~Filters.command | perm_data['filter']
+                else:
+                    data_filter = ~Filters.command & ~perm_data['filter']
+                if not data_filter.filter(update):
+                    raise InvalidPermissionsError()
+            except KeyError:
+                pass
+            except InvalidPermissionsError:
+                update.message.reply_text(perm_data['user_msg'])
+                logger.debug(perm_data['log_msg'].format(
+                    user_log_str=user_log_str(update.message),
+                    user_perm=user.permissions,
+                    message=update.message
+                ))
+                return False
+
+        return True
 
 
 class PassedCaptchaFilter(BaseFilter):
