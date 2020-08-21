@@ -83,8 +83,8 @@ class AntiFloodFilter(BaseFilter):
                 return True
 
             if not self._last_message_dict[tg_user.id]['sent_warning']:
-                logger.info(f'{user_log_str(message)} is trying to flood '
-                            'the chat')
+                logger.warning(f'{user_log_str(message)} is trying to flood '
+                               'the chat')
                 message.reply_text('You must waith {delay - elapsed_time} '
                                    'before sending another message or command')
             return False
@@ -130,9 +130,35 @@ class UnbannedUsersFilter(BaseFilter):
             return False
 
 
+class CommandPermissionsFilter(BaseFilter):
+    def __init__(self, database_manager, command_dicts):
+        self._db_man = database_manager
+        self._command_dicts = command_dicts
+
+    def filter(self, message):
+        tg_user = message.from_user
+        user = User(self._db_man, tg_user.id)
+        try:
+            cmd = message.text.split()[0]
+            cmd_dict = self._command_dicts[cmd]
+            if Permissions.SEND_CMD | cmd_dict['permissions_required'] in\
+               user.permissions:
+                return True
+            else:
+                message.reply_text('You do not have the necessary permissions '
+                                   'to execute this command')
+
+                logger.warning(f'{user_log_str(message)} has tried to execute '
+                               f'{cmd} without the appropriate permissions')
+        except (KeyError, IndexError):
+            message.reply_text('Unknown command')
+
+        return False
+
+
 class MessagePermissionsFilter(BaseFilter):
     '''
-    This class filters the messages/commands of users that don't have the
+    This class filters the messages of users that don't have the
     necessary permissions
     '''
 
@@ -141,7 +167,6 @@ class MessagePermissionsFilter(BaseFilter):
         self.update_filter = True
 
         self._filter_map = {
-
             Permissions.SEND_SIMPLE_TEXT: {
                 'filter': Filters.entity('mention'),
                 'user_msg': 'You cannot send messages',
