@@ -23,6 +23,8 @@ import logging
 from telegram.ext.filters import BaseFilter
 from telegram.ext import Filters
 from permissions import Permissions, InvalidPermissionsError
+from datetime import datetime, timedelta
+from pytimeparse.timeparse import timeparse
 from captcha_manager import CaptchaManager, MaxCaptchaTriesError,\
         CaptchaFloodError
 from custom_dataclasses import User
@@ -37,10 +39,55 @@ class AnonPollFilter(Filters._Poll):
         return super().filter(message) and bool(message.poll.is_anonymous)
 
 
+
+
 class SimpleTextFilter(BaseFilter):
     def filter(self, message):
         return bool(message.text)
 
+
+class AntiFloodFilter(BaseFilter):
+    def __init__(self, database_manager, config):
+        super().__init__()
+        self._db_man = database_manager
+        self._default_time_delta = timedelta(
+            config["AntiFloodFilter"]["MinimumDelayBetweenMessages"]
+        )
+        self._last_message_dict = {}
+
+    def filter(self, message):
+        tg_user = message.from_user
+        user = User(self._db_man, tg_user.id)
+        if Permissions.BYPASS_ANTIFLOOD in user.permissions:
+            return True
+        else:
+            try:
+                delay = user.chat_delay
+            except ValueError:
+                delay = self._default_time_delta
+
+            now = datetime.utcnow()
+            try:
+                elapsed_time = now - self._last_message_dict[tg_user.id]
+                if elapsed_time > delay:
+                    # sent_warning is necessary to avoid a DOS by malicious
+                    # users that try to flood anyway
+                    self._last_message_dict[tg_user.id] = {
+                        'last_msg': now,
+                        'sent_warning': False
+                    }
+                    return True
+            except KeyError:
+                self._last_message_dict[tg_user.id] = {
+                    'last_msg': now,
+                    'sent_warning': False
+                }
+                return True
+
+            if not self._last_message_dict[tg_user.id]['sent_warning']:
+                message.reply_text('You must waith {delay - elapsed_time} '
+                                   'before sending another message or command')
+            return False
 
 class ActiveUsersFilter(BaseFilter):
     '''
