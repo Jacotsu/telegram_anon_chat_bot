@@ -83,8 +83,7 @@ CREATE_ACTIVE_CAPTCHA_TABLE = '''
         user_id INTEGER PRIMARY KEY,
         current_value TEXT NOT NULL DEFAULT '',
         unix_creation_time_date INTEGER NOT NULL DEFAULT 0,
-        unix_last_try_time_date INTEGER NOT NULL DEFAULT 0
-        CHECK(unix_last_try_time_date >= unix_creation_time_date),
+        unix_last_try_time_date INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY(user_id) REFERENCES users(user_id)
     ) WITHOUT ROWID;
 '''
@@ -116,8 +115,8 @@ CREATE_MESSAGES_TABLE = '''
         receiver_id INTEGER,
         unix_sent_date INTEGER NOT NULL,
         sender_message_id INTEGER NOT NULL,
-        receiver_message_id = INTEGER NOT NULL
-        FOREIGN KEY(sender_id) REFERENCES users(user_id)
+        receiver_message_id INTEGER NOT NULL,
+        FOREIGN KEY(sender_id) REFERENCES users(user_id),
         FOREIGN KEY(receiver_id) REFERENCES users(user_id)
     );
 '''
