@@ -20,7 +20,7 @@
 
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterable
 import logging
 from permissions import Permissions
@@ -31,9 +31,35 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Role:
-    role_id: int
-    name: str
-    permissions: Permissions
+    def __init__(self,
+                 db_man,
+                 name: str,
+                 permissions: Permissions = Permissions.NONE):
+
+        self._db_man = db_man
+        self.name = name
+        # Creates role if it doesn't exist
+
+        #if not self._db_man.user_exists(user_id):
+        #    self._db_man.create_user(user_id)
+        #    self.permissions = permissions
+        #    self.captcha_status
+
+    @property
+    def permissions(self) -> Permissions:
+        return self._db_man.get_role_permissions(self.name)
+
+    @permissions.setter
+    def permissions(self, new_permissions: Permissions = Permissions.NONE):
+        self._db_man.set_role_permissions(self.name, new_permissions)
+
+    @property
+    def power(self) -> int:
+        return self._db_man.get_role_power(self.name)
+
+    @power.setter
+    def power(self, new_power: int):
+        return self._db_man.set_role_power(self.name, new_power)
 
 
 @dataclass
@@ -192,6 +218,20 @@ class User:
 
     def kick(self):
         self._db_man.kick_user(self.user_id)
+
+    def reset_chat_delay(self):
+        self._db_man.reset_chat_delay(self.user_id)
+
+    @property
+    def chat_delay(self) -> timedelta:
+        return self._db_man.get_user_chat_delay(self.user_id)
+
+    @chat_delay.setter
+    def chat_delay(self, delta: timedelta):
+        if delta > 0:
+            self._db_man.set_user_chat_delay(self.user_id, delta)
+        else:
+            raise ValueError(f'The chat delay delta must be > 0 ({delta})')
 
     @property
     def role(self) -> Role:
