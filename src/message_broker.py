@@ -24,7 +24,7 @@ import logging
 from telegram.ext import MessageHandler, Filters, messagequeue
 from telegram import Message
 from custom_filters import ActiveUsersFilter, UnbannedUsersFilter,\
-        PassedCaptchaFilter
+        PassedCaptchaFilter, MessagePermissionsFilter, AntiFloodFilter
 from permissions import Permissions
 from custom_dataclasses import User
 
@@ -35,59 +35,50 @@ class MessageBroker:
     '''
     This class' main purpose is to send messages to valid users
     '''
-    def __init__(self, updater, database_manager, captcha_manager):
+    def __init__(self, updater, database_manager, captcha_manager, config):
         self._db_man = database_manager
         self._updater = updater
         self._captcha_manager = captcha_manager
 
         self._is_messages_queued_default = True
+        # Important to avoid hitting telegram's anti flood limits
         self._msg_queue = messagequeue.MessageQueue(
             all_burst_limit=29,
             all_time_limit_ms=1017)
 
         self._updater.dispatcher.add_handler(
+            # NB: The captcha filter must come before the permissions filter
+            # otherwhise new user won't be able to pass the verification
             MessageHandler(
                 UnbannedUsersFilter(self._db_man) &
-                ~Filters.command &
                 PassedCaptchaFilter(
                     self._db_man,
                     self._captcha_manager,
                     lambda x: User(self._db_man, x.message.from_user.id).join()
-                ),
+                ) &
+                AntiFloodFilter(self._db_man, config) &
+                MessagePermissionsFilter(self._db_man),
                 callback=self._message_callback))
 
     def _message_callback(self, update, context):
-        # Do things
-        self.process_message(update.message)
+        self.broadcast_message(update.message)
 
-    def process_message(
-            self,
-            message,
-            users: Iterable[User] = None,
-            permissions: Permissions = Permissions.RECEIVE):
-        '''
-        @param permissions The permissions required to receive the message
-        '''
+    def broadcast_message(self,
+                          message,
+                          permissions: Permissions = Permissions.RECEIVE):
         # Filter banned users, users that stopped the bot and those who
         # didn't pass the captcha
-        if users:
-            effective_users = filter(lambda x:
-                                     permissions in x.permissions and
-                                     x.captcha_status.passed
-                                     and x.is_active,
-                                     users)
-        else:
-            effective_users = filter(lambda x:
-                                     permissions in x.permissions and
-                                     x.captcha_status.passed,
-                                     self._db_man.get_active_users())
+        effective_users = filter(lambda x:
+                                 permissions in x.permissions and
+                                 x.captcha_status.passed,
+                                 self._db_man.get_active_users())
 
         for user in effective_users:
-            logger.debug(f'Relaying message to {user.user_id}')
-            self._send_or_forward_msg(user, message)
+            self.send_or_forward_msg(user, message)
 
     @messagequeue.queuedmessage
-    def _send_or_forward_msg(self, user, message):
+    def send_or_forward_msg(self, user, message):
+        logger.debug(f'Relaying message to {user.user_id}')
         if isinstance(message, Message):
             if Permissions.VIEW_CLEAR_MSGS in user.permissions:
                 self._updater.bot.forward_message(
@@ -96,9 +87,10 @@ class MessageBroker:
                     message_id=message.message_id
                 )
             else:
+                # Create attachment method map to correctly send messages
                 self._updater.bot.send_message(
                     user.user_id,
-                    message
+                    message.text
                 )
         else:
             self._updater.bot.send_message(
