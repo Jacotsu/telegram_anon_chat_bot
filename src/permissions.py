@@ -52,6 +52,11 @@ def with_limits(enumeration):
 @with_limits
 @unique
 class Permissions(IntFlag, metaclass=CustomEnumMetaForCaseInsensiviSubscript):
+    '''
+    An enum that represents the current user's permissions
+    NOTE TO DEVS: ONLY APPEND NEW PERMISSIONS, OTHERWISE THE PERMISSIONS STORED
+    IN THE DATABASE WILL BE GARBLED
+    '''
     # Basic permissions
     # Permission to receive message
     RECEIVE = auto()
