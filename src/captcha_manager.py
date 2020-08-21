@@ -49,6 +49,7 @@ class CaptchaManager:
     def __init__(self, config, database_manager: DatabaseManager):
         self._config = config
         self._db_man = database_manager
+        self._last_attempt_dict = {}
 
     def start_captcha_session(self, user: User):
         captcha_status = user.captcha_status
@@ -84,14 +85,14 @@ class CaptchaManager:
                 captcha_status.passed = True
                 captcha_status.current_value = ''
             else:
-                captcha_status.failed_attempts += 1
                 captcha_status.total_failed_attempts += 1
+                captcha_status.failed_attempts += 1
                 if captcha_status.failed_attempts > int(self._config["Captcha"]
                    ["MaxCaptchaTries"]):
                     captcha_status.failed_attempts = 0
                     captcha_status.current_value = ''
 
-                    if action_for_failure == 'ban':
+                    if action_for_failure.lower() == 'ban':
                         user.ban(end_date=now + ban_time_delta,
                                  reason='Too many captcha failures')
                         raise MaxCaptchaTriesError(
@@ -102,7 +103,7 @@ class CaptchaManager:
                             end_date=now + ban_time_delta
                         )
                         raise MaxCaptchaTriesError(now + time_delta)
-                    elif action_for_failure == 'kick':
+                    elif action_for_failure.lower() == 'kick':
                         user.kick()
                         raise MaxCaptchaTriesError(
                             'You have been kicked for failing the captcha'

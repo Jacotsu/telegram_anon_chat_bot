@@ -153,7 +153,7 @@ class CommandPermissionsFilter(BaseFilter):
         user = User(self._db_man, tg_user.id)
         try:
             cmd = message.text.split()[0]
-            cmd_dict = self._command_dicts[cmd]
+            cmd_dict = self._command_dicts[cmd[1:]]
             if cmd_dict['permissions_required'] in user.permissions:
                 return True
             else:
@@ -179,7 +179,7 @@ class MessagePermissionsFilter(BaseFilter):
 
         self._filter_map = {
             Permissions.SEND_SIMPLE_TEXT: {
-                'filter': Filters.entity('mention'),
+                'filter': SimpleTextFilter(),
                 'user_msg': 'You cannot send messages',
                 'log_msg': '{user_log_str} has tried to send a message'
                            'with invalid permissions ({user_perm}) '
@@ -400,6 +400,7 @@ class PassedCaptchaFilter(BaseFilter):
                  on_success_callback=None):
         self._db_man = database_manager
         self.update_filter = True
+        self._last_attempt_dict = {}
         self._captcha_manager = captcha_manager
         self._on_success_callback = on_success_callback
 
@@ -409,6 +410,8 @@ class PassedCaptchaFilter(BaseFilter):
         if user.captcha_status.passed:
             return True
         else:
+            delay = self._captcha_manager.\
+                _config["Captcha"]["TimeDelayBetweenAttempts"]
             # Proceed with captcha verification
             if user.captcha_status.current_value:
                 try:
@@ -426,7 +429,7 @@ class PassedCaptchaFilter(BaseFilter):
                     else:
                         update.message.reply_text('Wrong captcha')
                         max_tries = self._captcha_manager._config["Captcha"]\
-                                ["MaxCaptchaTries"]
+                            ["MaxCaptchaTries"]
                         logger.info(
                             f'{user_log_str(update)} has failed the '
                             'captcha challenge'
@@ -445,16 +448,21 @@ class PassedCaptchaFilter(BaseFilter):
                                     'for failing captcha '
                                     'auth too may times')
                 except CaptchaFloodError:
-                    logger.info(f'{user_log_str(update)} is flooding the'
-                                'captcha')
-                    delay = self._captcha_manager.\
-                        _config["Captcha"]["TimeDelayBetweenAttempts"]
-                    update.message.reply_text(
-                        f'You can try once every {delay}'
-                    )
+                    if not self._last_attempt_dict[tg_user.id]['sent_warning']:
+                        logger.info(f'{user_log_str(update)} is flooding the'
+                                    'captcha')
+                        update.message.reply_text(
+                            f'You can try once every {delay}'
+                        )
+
+                    self._last_attempt_dict[tg_user.id] = {
+                        'sent_warning': True
+                    }
+                    return False
             elif not user.captcha_status.current_value and \
                     user.captcha_status.passed:
                 return True
+
             captcha_img = self._captcha_manager.start_captcha_session(user)
             logger.info(f'{user_log_str(update)} generated captcha '
                         f'{user.captcha_status.current_value}')
@@ -463,4 +471,8 @@ class PassedCaptchaFilter(BaseFilter):
                 caption='Please complete the captcha challenge '
                 '(no spaces)'
             )
+
+            self._last_attempt_dict[tg_user.id] = {
+                'sent_warning': False
+            }
             return False
