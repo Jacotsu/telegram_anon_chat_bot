@@ -48,8 +48,8 @@ class AntiFloodFilter(BaseFilter):
     def __init__(self, database_manager, config):
         super().__init__()
         self._db_man = database_manager
-        self._default_time_delta = timedelta(
-            config["AntiFloodFilter"]["MinimumDelayBetweenMessages"]
+        self._default_time_delta = timeparse(
+            config["AntiFlood"]["MinimumDelayBetweenMessages"]
         )
         self._last_message_dict = {}
 
@@ -141,8 +141,7 @@ class CommandPermissionsFilter(BaseFilter):
         try:
             cmd = message.text.split()[0]
             cmd_dict = self._command_dicts[cmd]
-            if Permissions.SEND_CMD | cmd_dict['permissions_required'] in\
-               user.permissions:
+            if cmd_dict['permissions_required'] in user.permissions:
                 return True
             else:
                 message.reply_text('You do not have the necessary permissions '
@@ -154,7 +153,6 @@ class CommandPermissionsFilter(BaseFilter):
             message.reply_text('Unknown command')
 
         return False
-
 
 class MessagePermissionsFilter(BaseFilter):
     '''
