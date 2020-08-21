@@ -20,7 +20,7 @@
 
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import logging
 from typing import Iterable
 import queries
@@ -58,14 +58,21 @@ class DatabaseManager:
                     queries.CREATE_USER_ASSIGNED_ROLES,
                     queries.CREATE_CAPTCHA_LOG_TABLE,
                     queries.CREATE_ACTIVE_CAPTCHA_TABLE,
-                    queries.CREATE_BAN_LOG_TABLE
+                    queries.CREATE_BAN_LOG_TABLE,
+                    queries.CREATE_CHAT_DELAYS_TABLE
                 ]
 
                 view_creation_queries = [
                     queries.CREATE_ACTIVE_USERS_VIEW,
                     queries.CREATE_BANNED_USERS_VIEW
                 ]
-                for query in table_creation_queries + view_creation_queries:
+
+                init_queries = [
+                    queries.CREATE_DEFAULT_ROLE
+                ]
+
+                for query in table_creation_queries + view_creation_queries\
+                        + init_queries:
                     conn.execute(query)
             return self._conn[threading.get_ident()]
 
@@ -402,11 +409,98 @@ class DatabaseManager:
 
 # -------------------------------- [ROLES] ------------------------------------
 
-    def register_role(self, role):
-        raise NotImplementedError
+    def create_role(self,
+                    role_name,
+                    power: int,
+                    permissions: Permissions = Permissions.NONE
+                    ):
+        self._execute_simple_set_query(
+                queries.CREATE_UPDATE_ROLE,
+                {'role_power': power,
+                 'role_name': role_name,
+                 'role_permissions': int(permissions)
+                 }
+        )
 
-    def delete_role(self, role):
-        raise NotImplementedError
+    def delete_role(self, role_name):
+        if role_name != 'default':
+            default_role = custom_dataclasses.Role(self, 'default')
+            for user in self.get_users_by_role(role_name):
+                user.role = default_role
+            self._execute_simple_set_query(
+                    queries.DELETE_ROLE,
+                    {'role_name': role_name}
+            )
+        else:
+            raise ValueError('Cannot delete the default role')
 
-    def set_role(self, user_id, role):
-        raise NotImplementedError
+    def set_user_role(self, user_id: int, role_name: str):
+        self._execute_simple_set_query(
+                queries.SET_USER_ROLE,
+                {'user_id': user_id,
+                 'role_name': role_name},
+            )
+
+    def get_users_by_role(self, role_name: str) ->\
+            Iterable:
+        with self._get_connection() as conn:
+            cursor = conn.execute(queries.GET_USERS_BY_ROLE,
+                                  {'role_name': role_name})
+
+            return map(lambda x: custom_dataclasses.
+                       User(self, x['user_id']), cursor)
+
+    def set_role_permissions(self, role_name: str,
+                             new_permissions: Permissions = Permissions.NONE):
+
+        for user in self.get_users_by_role(role_name):
+            user.permissions = new_permissions
+
+        self._execute_simple_set_query(
+            queries.SET_ROLE_PERMISSIONS,
+            {'role_name': role_name,
+             'role_permissions': int(new_permissions)}
+        )
+
+    def set_role_power(self, role_name: str, new_power: int):
+        self._execute_simple_set_query(
+            queries.SET_ROLE_PERMISSIONS,
+            {'role_name': role_name,
+             'role_power': new_power}
+        )
+
+    def get_role_permissions(self, role_name: str) -> Permissions:
+        row = self._execute_get_query_for_1_row(
+            queries.GET_ROLE_PERMISSIONS,
+            {'role_name': role_name}
+        )
+        return Permissions(row['role_permissions'])
+
+    def get_role_power(self, role_name: str) -> int:
+        row = self._execute_get_query_for_1_row(
+            queries.GET_ROLE_POWER,
+            {'role_name': role_name}
+        )
+        return int(row['role_power'])
+
+# ------------------------------- [ANTIFLOOD] ---------------------------------
+    def get_user_chat_delay(self, user_id: int):
+        row = self._execute_get_query_for_1_row(
+                queries.GET_USER_CHAT_DELAY,
+                {'user_id': user_id},
+                f'{user_id} has not got any chat delay set'
+            )
+        return timedelta(milliseconds=int(row['chat_delay']))
+
+    def set_user_chat_delay(self, user_id: int, delay: timedelta):
+        self._execute_simple_set_query(
+                queries.SET_USER_CHAT_DELAY,
+                {'user_id': user_id,
+                 'delay': delay}
+            )
+
+    def reset_user_chat_delay(self, user_id: int):
+        self._execute_simple_set_query(
+                queries.RESET_USER_CHAT_DELAY,
+                {'user_id': user_id}
+            )
