@@ -20,6 +20,7 @@
 
 
 import logging
+from math import ceil
 from telegram.update import Update
 from custom_dataclasses import User
 from custom_logging import user_log_str
@@ -84,3 +85,9 @@ def get_user_by_reply_username_rawid(update_msg):
 
     # Make sure that None doesn't end up in the database
     return User(user_id, None)
+
+
+def chunk_string(string: str, chunk_size: int):
+    number_of_chunks = ceil(len(string) / chunk_size)
+    for i in range(number_of_chunks):
+        yield string[i::chunk_size]
