@@ -103,17 +103,26 @@ class Permissions(IntFlag, metaclass=CustomEnumMetaForCaseInsensiviSubscript):
     # ---------------------------- [LOGS MANAGEMENT] --------------------------
 
     VIEW_LOGS = auto()
-    USER_INFO = auto()
+    VIEW_USER_INFO = auto()
 
     # ---------------------------- [ADMINISTRATION] ---------------------------
 
     KICK = auto()
     BAN = auto()
+    DELETE_MESSAGE = auto()
     VIEW_CLEAR_MSGS = auto()
+
+    # ----------------------------- [PERMISSIONS] -----------------------------
+
+    SET_USER_PERMISSIONS = auto()
+    SET_DEFAULT_PERMISSIONS = auto()
+    SHOW_DEFAULT_PERMISSIONS = auto()
+    SET_SHOW_PERMISSIONS = auto()
 
     # ------------------------------- [ROLES] ---------------------------------
 
-    SET_ROLE = auto()
+    SET_USER_ROLE = auto()
+    SET_DEFAULT_ROLE = auto()
     EDIT_ROLE = auto()
     CREATE_ROLE = auto()
     DELETE_ROLE = auto()
@@ -125,9 +134,24 @@ class Permissions(IntFlag, metaclass=CustomEnumMetaForCaseInsensiviSubscript):
     BYPASS_CAPTCHA = auto()
 
     # ----------------------------- [ANTIFLOOD] -------------------------------
+
     BYPASS_ANTIFLOOD = auto()
+    SET_USER_CHAT_DELAY = auto()
+
+    # ------------------------------ [BANNER] ---------------------------------
+
+    SET_BANNERS = auto()
+
+    # ------------------------------- [PURGE] ---------------------------------
+
+    SET_PURGE_INTERVAL = auto()
+    PURGE_MESSAGES = auto()
 
     # ------------------------ [GROUPED PERMISSIONS] --------------------------
     SEND_TEXT = SEND_MENTION | SEND_HASHTAG | SEND_CASHTAG |\
         SEND_PHONE_NUMBER | SEND_UNDERLINE | SEND_EMAIL | SEND_BOLD |\
-        SEND_ITALIC | SEND_CODE | SEND_STRIKETHROUGH
+        SEND_ITALIC | SEND_CODE | SEND_STRIKETHROUGH | SEND_SIMPLE_TEXT
+
+    SEND_LINKS = SEND_URL | SEND_TEXT_LINK
+
+    SEND_MEDIA = SEND_ANIMATION | SEND_PHOTO | SEND_VIDEO | SEND_AUDIO
