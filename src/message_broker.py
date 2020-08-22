@@ -56,6 +56,7 @@ class MessageBroker:
                     self._captcha_manager,
                     lambda x: User(self._db_man, x.message.from_user.id).join()
                 ) &
+                ~Filters.command &
                 AntiFloodFilter(self._db_man, config) &
                 MessagePermissionsFilter(self._db_man),
                 callback=self._message_callback))
