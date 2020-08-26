@@ -22,13 +22,21 @@
 from typing import Iterable
 import logging
 from telegram.ext import MessageHandler, Filters, messagequeue
-from telegram import Message
+from telegram import Message, Audio, Contact, Document, Animation,\
+        Location, PhotoSize, Sticker, Venue, Video, VideoNote, Voice,\
+        InputMediaPhoto
+
 from custom_filters import ActiveUsersFilter, UnbannedUsersFilter,\
         PassedCaptchaFilter, MessagePermissionsFilter, AntiFloodFilter
 from permissions import Permissions
 from custom_dataclasses import User
 
 logger = logging.getLogger(__name__)
+
+
+def send_photo(bot, user, message):
+    message.photo.sort(reverse=True, key=lambda x: x.width)
+    bot.send_photo(user.user_id, message.photo[0])
 
 
 class MessageBroker:
@@ -39,6 +47,37 @@ class MessageBroker:
         self._db_man = database_manager
         self._updater = updater
         self._captcha_manager = captcha_manager
+        self._message_forward_map = {
+            Audio: lambda x, y: self._updater.bot.send_audio(
+                x.user_id, y.audio.file_id, y.caption),
+            Contact: lambda x, y: self._updater.bot.send_contact(
+                x.user_id, contact=y.contact),
+            Document: lambda x, y: self._updater.bot.send_document(
+                x.user_id, y.document, caption=y.caption),
+            # GIF or H.264/MPEG-4 AVC video without sound
+            Animation: lambda x, y: self._updater.bot.send_animation(
+                x.user_id, y.animation, caption=y.caption),
+            Location: lambda x, y: self._updater.bot.send_location(
+                x.user_id, location=y.location),
+            # Could be one of the following:
+            # - Single photo
+            # - Photo album
+            list: lambda x, y: send_photo(
+                self._updater.bot, x, y
+            ),
+            Sticker: lambda x, y: self._updater.bot.send_sticker(
+                x.user_id, y.sticker),
+            Venue: lambda x, y: self._updater.bot.send_venue(
+                x.user_id, venue=y.venue),
+            Video: lambda x, y: self._updater.bot.send_video(
+                x.user_id, y.video.file_id),
+            VideoNote: lambda x, y: self._updater.bot.send_video_note(
+                x.user_id, y.video_note.file_id),
+            Voice: lambda x, y: self._updater.bot.send_voice(
+                x.user_id, y.voice.file_id, y.caption),
+            type(None): lambda x, y: self._updater.bot.send_message(
+                x.user_id, y.text)
+        }
 
         self._is_messages_queued_default = True
         # Important to avoid hitting telegram's anti flood limits
@@ -62,6 +101,11 @@ class MessageBroker:
                 callback=self._message_callback))
 
     def _message_callback(self, update, context):
+        poll = update.message.poll
+        if poll:
+            if poll['id'] == '5920521737891479577':
+                pass
+
         self.broadcast_message(update.message)
 
     def broadcast_message(self,
@@ -74,8 +118,14 @@ class MessageBroker:
                                  x.captcha_status.passed,
                                  self._db_man.get_active_users())
 
-        for user in effective_users:
-            self.send_or_forward_msg(user, message)
+        if isinstance(message, Message) and \
+                type(message.effective_attachment) not in \
+                self._message_forward_map:
+            message.reply_text('Unsupported message type '
+                               f'{type(message.effective_attachment)}')
+        else:
+            for user in effective_users:
+                self.send_or_forward_msg(user, message)
 
     @messagequeue.queuedmessage
     def send_or_forward_msg(self, user, message):
@@ -88,10 +138,10 @@ class MessageBroker:
                     message_id=message.message_id
                 )
             else:
-                # Create attachment method map to correctly send messages
-                self._updater.bot.send_message(
-                    user.user_id,
-                    message.text
+                # message.animation Requires document
+                self._message_forward_map[type(message.effective_attachment)](
+                    user,
+                    message
                 )
         else:
             self._updater.bot.send_message(
