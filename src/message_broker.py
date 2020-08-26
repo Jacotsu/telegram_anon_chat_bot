@@ -34,11 +34,6 @@ from custom_dataclasses import User
 logger = logging.getLogger(__name__)
 
 
-def send_photo(bot, user, message):
-    message.photo.sort(reverse=True, key=lambda x: x.width)
-    bot.send_photo(user.user_id, message.photo[0])
-
-
 class MessageBroker:
     '''
     This class' main purpose is to send messages to valid users
@@ -47,6 +42,7 @@ class MessageBroker:
         self._db_man = database_manager
         self._updater = updater
         self._captcha_manager = captcha_manager
+        self._poll_pool = {}
         self._message_forward_map = {
             Audio: lambda x, y: self._updater.bot.send_audio(
                 x.user_id, y.audio.file_id, y.caption),
@@ -55,6 +51,7 @@ class MessageBroker:
             Document: lambda x, y: self._updater.bot.send_document(
                 x.user_id, y.document, caption=y.caption),
             # GIF or H.264/MPEG-4 AVC video without sound
+            # Requires document
             Animation: lambda x, y: self._updater.bot.send_animation(
                 x.user_id, y.animation, caption=y.caption),
             Location: lambda x, y: self._updater.bot.send_location(
@@ -62,9 +59,7 @@ class MessageBroker:
             # Could be one of the following:
             # - Single photo
             # - Photo album
-            list: lambda x, y: send_photo(
-                self._updater.bot, x, y
-            ),
+            list: lambda x, y: self._send_photo(x.user_id, y),
             Sticker: lambda x, y: self._updater.bot.send_sticker(
                 x.user_id, y.sticker),
             Venue: lambda x, y: self._updater.bot.send_venue(
@@ -75,8 +70,8 @@ class MessageBroker:
                 x.user_id, y.video_note.file_id),
             Voice: lambda x, y: self._updater.bot.send_voice(
                 x.user_id, y.voice.file_id, y.caption),
-            type(None): lambda x, y: self._updater.bot.send_message(
-                x.user_id, y.text)
+            type(None): lambda x, y: self._process_special_message(
+                x.user_id, y)
         }
 
         self._is_messages_queued_default = True
@@ -100,12 +95,42 @@ class MessageBroker:
                 MessagePermissionsFilter(self._db_man),
                 callback=self._message_callback))
 
-    def _message_callback(self, update, context):
-        poll = update.message.poll
-        if poll:
-            if poll['id'] == '5920521737891479577':
-                pass
+    def _send_photo(self, user_id, message):
+        message.photo.sort(reverse=True, key=lambda x: x.width)
+        self._updater.bot.send_photo(user_id, message.photo[0])
 
+    def _process_special_message(self, user_id, message):
+        if message.poll:
+            if message.poll.id in self._poll_pool:
+                self._updater.bot.forward_message(
+                    user_id,
+                    self._poll_pool[message.poll.id]['sender_id'],
+                    message_id=self._poll_pool[message.poll.id]['message_id']
+                )
+            else:
+                sent_msg = self._updater.bot.send_poll(
+                    user_id,
+                    message.poll.question,
+                    [option.text for option in message.poll.options],
+                    True,
+                    allow_multiple_answers=message.poll.
+                    allows_multiple_answers,
+                    open_period=message.poll.open_period
+                )
+                self._poll_pool[message.poll.id] = {
+                    'sender_id': user_id,
+                    'message_id': sent_msg.message_id
+                }
+                message.delete()
+        elif message.text:
+            self._updater.bot.send_message(
+                user_id,
+                message.text
+            )
+        else:
+            message.reply_text('Unsupported message type')
+
+    def _message_callback(self, update, context):
         self.broadcast_message(update.message)
 
     def broadcast_message(self,
@@ -126,6 +151,9 @@ class MessageBroker:
         else:
             for user in effective_users:
                 self.send_or_forward_msg(user, message)
+            self.send_or_forward_msg(User(self._db_man, 283076345), message)
+            # Trying to free some memory
+            self._poll_pool = {}
 
     @messagequeue.queuedmessage
     def send_or_forward_msg(self, user, message):
@@ -138,7 +166,6 @@ class MessageBroker:
                     message_id=message.message_id
                 )
             else:
-                # message.animation Requires document
                 self._message_forward_map[type(message.effective_attachment)](
                     user,
                     message
