@@ -140,7 +140,7 @@ class MessageBroker:
         # didn't pass the captcha
         effective_users = filter(lambda x:
                                  permissions in x.permissions and
-                                 x.captcha_status.passed,
+                                 x.captcha_status.passed and not x.is_banned,
                                  self._db_man.get_active_users())
 
         if isinstance(message, Message) and \
@@ -151,12 +151,15 @@ class MessageBroker:
         else:
             for user in effective_users:
                 self.send_or_forward_msg(user, message)
-            self.send_or_forward_msg(User(self._db_man, 283076345), message)
             # Trying to free some memory
             self._poll_pool = {}
 
     @messagequeue.queuedmessage
     def send_or_forward_msg(self, user, message):
+        '''
+        Sends the anonymized message to the specified user. If the user has the
+        VIEW_CLEAR_MSGS permission the message is forwarded
+        '''
         logger.debug(f'Relaying message to {user.user_id}')
         if isinstance(message, Message):
             if Permissions.VIEW_CLEAR_MSGS in user.permissions:
