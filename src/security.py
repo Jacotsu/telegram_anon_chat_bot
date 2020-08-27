@@ -20,8 +20,80 @@
 
 import logging
 from telegram.ext import Updater
+from telegram import Update
+from custom_dataclasses import User, Role
+from utils import user_log_str
 
 logger = logging.getLogger(__name__)
+
+
+def execute_if_hierarchy_is_respected(
+    agent: User,
+    receiver: User,
+    function,
+    update: Update,
+    agent_message_on_success: str = None,
+    agent_message_on_failure: str = None,
+    log_message_on_success: str = None,
+    log_message_on_failure: str = None,
+    callback_on_success = None,
+    callback_on_failure = None
+):
+
+    if receiver.role.power < agent.role.power:
+        function()
+        if agent_message_on_success:
+            update.message.reply_text(agent_message_on_success)
+        if log_message_on_success:
+            logger.info(log_message_on_success)
+        if callback_on_success:
+            callback_on_success()
+    else:
+        if agent_message_on_failure:
+            update.message.reply_text(agent_message_on_failure)
+        if log_message_on_failure:
+            logger.warning(log_message_on_failure)
+        if callback_on_failure:
+            callback_on_failure()
+
+def execute_if_role_hierarchy_is_preserved(
+    agent: User,
+    target_role: Role,
+    function,
+    update: Update,
+    agent_message_on_success: str = None,
+    log_message_on_success: str = None,
+    callback_on_success = None,
+    callback_on_failure = None
+):
+    if agent.role.power > target_role.power:
+        if target_role.permissions in agent.permissions:
+            function()
+            if callback_on_success:
+                callback_on_success()
+        else:
+            update.message.reply_text(
+                'You can\'t set a role whose permissions are '
+                'more than yours'
+            )
+            logger.warning(
+                f'{user_log_str(update)} has tried to set a role '
+                'whose permissions are higher than his'
+            )
+    else:
+        update.message.reply_text(
+            'You can\'t set a role whose power is higher '
+            'than yours as default'
+        )
+        logger.warning(
+            f'{user_log_str(update)} has tried to set a role '
+            'whose power is higher than his as default role'
+        )
+
+    if callback_on_failure:
+        callback_on_failure()
+
+
 
 def has_permissions(logger=logging.getLogger(__name__)):
     def wrap(f):
@@ -38,13 +110,3 @@ def has_permissions(logger=logging.getLogger(__name__)):
                         f"{f.__name__} \"{data}\"")
         return wrapped_f
     return wrap
-
-
-def check_captcha(f):
-    def wrap(*args, **kwargs):
-        f(*args, **kwargs)
-    return wrap
-
-
-class CaptchaManager:
-    pass
