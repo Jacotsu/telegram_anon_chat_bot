@@ -25,11 +25,12 @@ from telegram.ext import MessageHandler, Filters, messagequeue
 from telegram import Message, Audio, Contact, Document, Animation,\
         Location, PhotoSize, Sticker, Venue, Video, VideoNote, Voice,\
         InputMediaPhoto
-
 from custom_filters import ActiveUsersFilter, UnbannedUsersFilter,\
         PassedCaptchaFilter, MessagePermissionsFilter, AntiFloodFilter
 from permissions import Permissions
+from poll_types import PollTypes
 from custom_dataclasses import User
+from custom_logging import user_log_str
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,8 @@ class MessageBroker:
                 self._updater.bot.forward_message(
                     user_id,
                     self._poll_pool[message.poll.id]['sender_id'],
-                    message_id=self._poll_pool[message.poll.id]['message_id']
+                    message_id=self._poll_pool[message.poll.id]
+                    ['message_id']
                 )
             else:
                 sent_msg = self._updater.bot.send_poll(
@@ -131,16 +133,43 @@ class MessageBroker:
             message.reply_text('Unsupported message type')
 
     def _message_callback(self, update, context):
-        self.broadcast_message(update.message)
+        message = update.message
+        if message.poll:
+            # Check for admin polls
+            try:
+                # !IMPORTANT! always check that the answer sender is the poll
+                # creator, otherwise non admins/mods could vote by voting
+                # a forwarded poll
+                data = self._db_man.get_admin_poll(message.poll.id)
+                if data['creator_user_id'] == message.from_user.id:
+                    poll_type = data['poll_type']
+                    # Should turn this into a map
+                    if poll_type == PollTypes.SET_DEFAULT_ROLE:
+                        message.reply_text('default_role')
+                        raise NotImplementedError
+                    elif poll_type == PollTypes.SET_USER_PERMISSIONS:
+                        raise NotImplementedError
+                    elif poll_type == PollTypes.SET_ROLE_PERMISSIONS:
+                        raise NotImplementedError
+                    elif poll_type == PollTypes.SET_DEFAULT_ROLE:
+                        raise NotImplementedError
+                else:
+                    logger.warning(f'{user_log_str(message)} has tried to'
+                                   'vote in an admin poll not created by him.'
+                                    'The creator of the poll '
+                                   f'({data["creator_user_id"]}) may have'
+                                   ' gone rogue.'
+                                   )
+                #poll_id, poll_type, creator_user_id, extra_data
+            except ValueError:
+                self.broadcast_message(update.message)
 
     def broadcast_message(self,
                           message,
                           permissions: Permissions = Permissions.RECEIVE):
-        # Filter banned users, users that stopped the bot and those who
-        # didn't pass the captcha
-        effective_users = filter(lambda x:
-                                 permissions in x.permissions and
-                                 x.captcha_status.passed and not x.is_banned,
+        # Select only users whose permissions match
+        # Banned and inactive users are automatically filtered by the database
+        effective_users = filter(lambda x: permissions in x.permissions,
                                  self._db_man.get_active_users())
 
         if isinstance(message, Message) and \
