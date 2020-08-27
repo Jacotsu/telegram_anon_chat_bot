@@ -19,7 +19,9 @@ setup(
     install_requires=[
         "pytimeparyse",
         "captcha",
-        "python-telegram-bot"
+        "python-telegram-bot",
+        "telethon",
+        "validate"
     ],
     python_requires='>=3.8',
     packages=['anon_chat_bot'],
