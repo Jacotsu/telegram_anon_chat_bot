@@ -23,8 +23,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable
 import logging
-from permissions import Permissions
 import database
+from permissions import Permissions
+from user_resolver import UserResolver, UserResolverError
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,9 @@ class Role:
         #    self._db_man.create_user(user_id)
         #    self.permissions = permissions
         #    self.captcha_status
+
+    def __str__(self):
+        return f'{self.name}({self.power}): {self.permissions}'
 
     @property
     def permissions(self) -> Permissions:
@@ -179,15 +183,38 @@ class User:
     def __init__(self,
                  db_man,
                  user_id: int,
-                 permissions: Permissions = Permissions.NONE):
+                 permissions: Permissions = Permissions.NONE,
+                 resolver: UserResolver = None
+                 ):
         self._db_man = db_man
         self.user_id = user_id
-        # Creates user if it doesn't exist
 
+        try:
+            if resolver:
+                info = resolver.get_user_info(user_id)
+                self.first_name = info['first_name']
+                self.last_name = info['last_name']
+                self.username = info['id']
+                self._fmt_str = '[{first_name}{last_name}{username}({id})]'
+            else:
+                raise UserResolverError
+        except UserResolverError:
+            self._fmt_str = '[{id}]'
+
+        # Creates user if it doesn't exist
         if not self._db_man.user_exists(user_id):
             self._db_man.create_user(user_id)
             self.permissions = permissions
             self.captcha_status
+
+    def __str__(self):
+        data = {
+            'first_name': f'{self.first_name} ' or '',
+            'last_name': f'{self.last_name} ' or '',
+            'username': f'@{self.username} ' or '',
+            'id': self.user_id
+        }
+        return self._fmt_str.format_map(data)
 
     @property
     def captcha_status(self) -> CaptchaStatus:
@@ -209,19 +236,6 @@ class User:
     def is_active(self) -> bool:
         return self._db_man.is_user_active(self.user_id)
 
-    def join(self):
-        self._db_man.log_join(self.user_id)
-
-    def ban(self, end_date: datetime, reason: str = None,
-            start_date: datetime = datetime.utcnow()):
-        self._db_man.ban(self.user_id, start_date, end_date, reason)
-
-    def kick(self):
-        self._db_man.kick_user(self.user_id)
-
-    def reset_chat_delay(self):
-        self._db_man.reset_chat_delay(self.user_id)
-
     @property
     def chat_delay(self) -> timedelta:
         return self._db_man.get_user_chat_delay(self.user_id)
@@ -235,15 +249,11 @@ class User:
 
     @property
     def role(self) -> Role:
-        raise NotImplementedError()
+        return self._db_man.get_user_role(self.user_id)
 
     @role.setter
     def role(self, new_role: Role):
-        raise NotImplementedError()
-
-    # Quit is basically the same as kicking
-    def quit(self):
-        self.kick()
+        self._db_man.set_user_role(self.user_id, new_role.name)
 
     @property
     def join_quit_log(self) -> Iterable[DateIntervalLog]:
@@ -252,3 +262,23 @@ class User:
     @property
     def ban_log(self) -> Iterable[DateIntervalLog]:
         return self._db_man.get_ban_log(self.user_id)
+
+    def join(self):
+        self._db_man.log_join(self.user_id)
+
+    def ban(self, end_date: datetime, reason: str = None,
+            start_date: datetime = datetime.utcnow()):
+        self._db_man.ban(self.user_id, start_date, end_date, reason)
+
+    def unban(self, reason: str = ''):
+        self._db_man.unban(self.user_id, reason)
+
+    def kick(self):
+        self._db_man.kick_user(self.user_id)
+
+    def reset_chat_delay(self):
+        self._db_man.reset_chat_delay(self.user_id)
+
+    # Quit is basically the same as kicking
+    def quit(self):
+        self.kick()
