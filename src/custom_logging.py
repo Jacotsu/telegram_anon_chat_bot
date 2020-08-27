@@ -20,15 +20,23 @@
 
 
 import logging
+from telegram import Update
 
 
-def user_log_str(update):
+def user_log_str(update_or_message):
     format_str = '{first_name} {last_name} @{username} ({id}):'
+    if isinstance(update_or_message, Update):
+        msg = update_or_message.message
+    elif isinstance(update_or_message, dict):
+        return format_str.format(**update_or_message)
+    else:
+        msg = update_or_message
+
     return format_str.format(
-        first_name=update.message.from_user.first_name,
-        last_name=update.message.from_user.last_name,
-        username=update.message.from_user.username,
-        id=update.message.from_user.id)
+        first_name=msg.from_user.first_name,
+        last_name=msg.from_user.last_name,
+        username=msg.from_user.username,
+        id=msg.from_user.id)
 
 
 class CustomFormatter(logging.Formatter):
