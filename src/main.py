@@ -20,10 +20,9 @@
 
 import logging
 import argparse
-import sys
-from configobj import ConfigObj, ConfigObjError
 from custom_logging import CustomFormatter
 from bot_manager import BotManager
+from custom_config import load_config
 
 
 hdlr = logging.StreamHandler()
@@ -55,23 +54,7 @@ def main():
     # wont work
     logging.warning(f'Log level set to {args.verbosity}')
 
-    for path in ['config.ini', '/etc/anon_chat_bot/config.ini']:
-        try:
-            config = ConfigObj(path)
-            if config.keys():
-                break
-        except ConfigObjError:
-            logger.error("{path}: Config file is malformed")
-            sys.exit(1)
-
-    if not config.keys():
-        logger.error(
-            "Config file is empty, non existent or has wrong "
-            "permissions make sure that either config.ini or "
-            "/etc/anon_chat_bot/config.ini exist and have correct"
-            "permissions")
-        sys.exit(1)
-
+    config = load_config()
     bot_mgr = BotManager(config)
     bot_mgr.start()
     bot_mgr.idle()
