@@ -121,23 +121,17 @@ CREATE_MESSAGES_TABLE = '''
     );
 '''
 
+CREATE_ADMINISTRATIVE_POLLS_TABLE = '''
+    CREATE TABLE IF NOT EXISTS admin_polls (
+        poll_id INTEGER PRIMARY KEY,
+        poll_type INTEGER NOT NULL,
+        creator_user_id INTEGER NOT NULL,
+        extra_data BLOB,
+        FOREIGN KEY(user_id) REFERENCES users(user_id)
+    ) WITHOUT ROWID;
+'''
 
 # ----------------------------[VIEWS CREATION]---------------------------------
-
-# Selects only the users where their joined date is more recent than their
-# quit date (this means that they rejoined or first joined)
-CREATE_ACTIVE_USERS_VIEW = '''
-    CREATE VIEW IF NOT EXISTS active_users (user_id)
-    AS
-    SELECT
-        user_id
-    FROM
-        users
-    INNER JOIN join_log USING (user_id)
-    LEFT JOIN quit_log USING (user_id)
-    GROUP BY user_id
-    HAVING IFNULL(MAX(unix_join_date), 0) > IFNULL(MAX(unix_quit_date), 0);
-'''
 
 CREATE_BANNED_USERS_VIEW = '''
     CREATE VIEW IF NOT EXISTS banned_users (user_id,
@@ -151,6 +145,63 @@ CREATE_BANNED_USERS_VIEW = '''
         strftime("%s", 'now')*1000000 >= IFNULL(unix_start_date, 0)
         AND strftime("%s", 'now')*1000000 <=
         IFNULL(unix_end_date, 9223372036854775807);
+'''
+
+# Selects only unbanned users that passed the captcha and
+# whose joined date is more recent than their
+# quit date (this means that they rejoined or first joined)
+# CREATE AFTER BANNED_USERS_VIEW
+CREATE_ACTIVE_USERS_VIEW = '''
+    CREATE VIEW IF NOT EXISTS active_users (user_id)
+    AS
+    SELECT
+        user_id
+    FROM
+        users
+    INNER JOIN join_log USING (user_id)
+    LEFT JOIN quit_log USING (user_id)
+    GROUP BY user_id
+    HAVING IFNULL(MAX(unix_join_date), 0) > IFNULL(MAX(unix_quit_date), 0)
+    AND user_id NOT IN (SELECT user_id FROM banned_users)
+    AND (SELECT passed FROM captcha_status WHERE user_id = user_id);
+'''
+
+# ------------------------------ [TRIGGERS] -----------------------------------
+
+# Set the user's permissions to the role permissions
+USER_ROLE_CHANGED = '''
+    CREATE TRIGGER IF NOT EXISTS user_role_change_trigger
+        BEFORE UPDATE
+        ON assigned_roles
+    BEGIN
+        REPLACE INTO permissions(user_id, permissions)
+        VALUES (
+            OLD.user_id
+            (SELECT role_permissions
+             FROM roles
+             WHERE role_name = NEW.role_name)
+        );
+    END;
+'''
+
+# When a User is banned return him to the default role, which is the role with
+# the lowest power
+USER_BANNED = '''
+    CREATE TRIGGER IF NOT EXISTS user_ban_trigger
+        BEFORE UPDATE
+        ON ban_log
+    BEGIN
+        REPLACE INTO permissions(user_id, permissions)
+        VALUES (
+            OLD.user_id
+            (SELECT role_permissions
+             FROM roles
+             WHERE role_name = NEW.role_name
+             ORDER BY power ASC
+             LIMIT 1
+             )
+        );
+    END;
 '''
 
 # ---------------------------[USER MANAGEMENT]---------------------------------
@@ -362,6 +413,11 @@ CREATE_UPDATE_ROLE = '''
     VALUES (:role_name, :role_power, :role_permissions);
 '''
 
+GET_ROLES = '''
+    SELECT role_name
+    FROM roles;
+'''
+
 DELETE_ROLE = '''
     DELETE FROM roles
     WHERE role_name = :role_name;
@@ -418,6 +474,12 @@ SET_ROLE_POWER = '''
     LEFT JOIN roles AS old USING (role_name);
 '''
 
+DOES_ROLE_EXIST = '''
+    SELECT 1
+    FROM roles
+    WHERE role_name = :role_name
+'''
+
 # ------------------------------- [ANTIFLOOD] ---------------------------------
 
 GET_USER_CHAT_DELAY = '''
@@ -453,4 +515,22 @@ GET_MESSAGES_TO_PURGE = '''
 PURGE_MESSAGES = '''
     DELETE FROM message_log
     WHERE unix_sent_date < :unix_utc_timedate;
+'''
+
+# ------------------------- [ADMINISTRATIVE POLLS] ----------------------------
+
+REGISTER_ADMIN_POLL = '''
+    REPLACE INTO admin_polls(poll_id, poll_type, creator_user_id, extra_data)
+    VALUES (:poll_id, :poll_type, :user_id, :extra_data);
+'''
+
+DELETE_ADMIN_POLL = '''
+    DELETE FROM admin_polls
+    WHERE poll_id = :poll_id;
+'''
+
+GET_ADMIN_POLL = '''
+    SELECT poll_type, creator_user_id, extra_data
+    FROM admin_polls
+    WHERE poll_id = :poll_id;
 '''

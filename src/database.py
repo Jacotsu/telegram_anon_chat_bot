@@ -26,11 +26,13 @@ from typing import Iterable
 import queries
 import custom_dataclasses
 from permissions import Permissions
+from utils import SingletonDecorator
 
 
 logger = logging.getLogger(__name__)
 
 
+@SingletonDecorator
 class DatabaseManager:
     '''
     An internal class that is used to manage the database
@@ -63,18 +65,27 @@ class DatabaseManager:
                     queries.CREATE_MESSAGES_TABLE
                 ]
 
+                # DO NOT change the order
                 view_creation_queries = [
-                    queries.CREATE_ACTIVE_USERS_VIEW,
-                    queries.CREATE_BANNED_USERS_VIEW
+                    queries.CREATE_BANNED_USERS_VIEW,
+                    queries.CREATE_ACTIVE_USERS_VIEW
                 ]
 
                 init_queries = [
                     queries.CREATE_DEFAULT_ROLE
                 ]
 
+                triggers = [
+                    queries.USER_ROLE_CHANGED
+                ]
+
                 for query in table_creation_queries + view_creation_queries\
                         + init_queries:
                     conn.execute(query)
+
+                for query in triggers:
+                    conn.executescript(query)
+
             return self._conn[threading.get_ident()]
 
     @staticmethod
@@ -240,6 +251,14 @@ class DatabaseManager:
              'unix_end_date': int(start_date.replace(tzinfo=timezone.utc)
                                   .timestamp()*1E6),
              'reason': reason
+             }
+        )
+
+    def unban(self, user_id: int, reason: str = ''):
+        self._execute_simple_set_query(
+            queries.UNBAN_USER,
+            {'user_id': user_id,
+             'reason': f'Unbanned by {user_id} for: {reason}'
              }
         )
 
@@ -442,6 +461,17 @@ class DatabaseManager:
                  'role_name': role_name},
             )
 
+    def get_user_role(self, user_id: int, role_name: str):
+        try:
+            row = self._get_single_row_from_cursor(
+                    queries.GET_USER_ROLE,
+                    {'user_id': user_id}
+                )
+            return custom_dataclasses.Role(self, row['role_name'])
+        except ValueError:
+            pass
+
+
     def get_users_by_role(self, role_name: str) ->\
             Iterable:
         with self._get_connection() as conn:
@@ -483,6 +513,31 @@ class DatabaseManager:
             {'role_name': role_name}
         )
         return int(row['role_power'])
+
+    def get_roles(self):
+        return map(lambda x: custom_dataclasses.Role(self, x['role_name']),
+                   self._execute_simple_get_query(queries.GET_ROLES))
+
+    def does_role_exist(self, role_name: str):
+        try:
+            row = self._execute_get_query_for_1_row(
+                queries.DOES_ROLE_EXIST,
+                {'role_name': role_name}
+            )
+            if row[0]:
+                return True
+            else:
+                return False
+        except ValueError:
+            return False
+
+    def show_roles(self):
+        cursor = self._execute_simple_get_query(
+            queries.GET_ROLES,
+        )
+        return map(lambda x: custom_dataclasses.Role(
+            self, x['role_name']), cursor)
+
 
 # ------------------------------- [ANTIFLOOD] ---------------------------------
     def get_user_chat_delay(self, user_id: int):
@@ -535,4 +590,30 @@ class DatabaseManager:
                                       .timestamp()*1E6),
                 'sender_message_id': message_id,
                 'receiver_message_id': receiver_message_id}
+        )
+
+# --------------------------- [ADMINISTRATIVE POLLS] --------------------------
+
+    def delete_admin_poll(self, poll_id: int):
+        self._execute_simple_set_query(
+            queries.DELETE_ADMIN_POLL,
+            {'poll_id': poll_id}
+        )
+
+    def get_admin_poll(self, poll_id: int):
+        row = self._execute_get_query_for_1_row(
+            queries.GET_ADMIN_POLL,
+            {'poll_id': poll_id}
+        )
+        return row
+
+    def register_admin_poll(self, poll_id: int, poll_type: int, user_id: int,
+                            extra_data=None):
+        self._execute_simple_set_query(
+            queries.REGISTER_ADMIN_POLL,
+            {'poll_id': poll_id,
+             'poll_type': poll_type,
+             'user_id': user_id,
+             'extra_data': extra_data
+             }
         )
