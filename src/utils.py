@@ -20,13 +20,39 @@
 
 
 import logging
+import sys
 from math import ceil
-from telegram.update import Update
-from custom_dataclasses import User
+from enum import EnumMeta
+from operator import or_ as _or_
+from functools import reduce
+from typing import List
+from telegram import Message, Update
 from custom_logging import user_log_str
+import permissions
 
 
 logger = logging.getLogger(__name__)
+
+
+class CustomEnumMetaForCaseInsensiviSubscript(EnumMeta):
+    # https://stackoverflow.com/questions/24716723/
+    # issue-extending-enum-and-redefining-getitem
+    def __getitem__(self, cls):
+        if isinstance(cls, str):
+            return super().__getitem__(cls.upper())
+        else:
+            return super().__getitem__(cls)
+
+
+def with_limits(enumeration):
+    # https://stackoverflow.com/questions/42251081/
+    # representation-of-all-values-in-flag-enum
+    "add NONE and ALL psuedo-members to enumeration"
+    none_mbr = enumeration(0)
+    all_mbr = enumeration(reduce(_or_, enumeration))
+    enumeration._member_map_['NONE'] = none_mbr
+    enumeration._member_map_['ALL'] = all_mbr
+    return enumeration
 
 
 def validate_number_command_args(f):
@@ -71,23 +97,64 @@ def log_action(logger=logging.getLogger(__name__)):
     return wrap
 
 
-def get_user_by_reply_username_rawid(update_msg):
-    replied_msg = update_msg.reply_to_message
-    if replied_msg:
-        user_id = replied_msg.from_user.id
-    elif '@' in update_msg.text:
-        # TODO
-        user_id = update_msg.text.split()[1]
-        pass
-    else:
-        # is raw id
-        user_id = update_msg.text.split()[1]
-
-    # Make sure that None doesn't end up in the database
-    return User(user_id, None)
-
-
 def chunk_string(string: str, chunk_size: int):
     number_of_chunks = ceil(len(string) / chunk_size)
     for i in range(number_of_chunks):
         yield string[i::chunk_size]
+
+
+def get_permissions_from_config_section(config_section):
+    perms = permissions.Permissions.NONE
+    for perm in config_section.split():
+        try:
+            perms |= permissions.Permissions[perm.strip()]
+        except KeyError:
+            logger.error('Invalid default permission in users '
+                         f'permissions {perm}')
+            sys.exit(1)
+    return perms
+
+
+def create_and_register_poll(
+    database_manager,
+    update_or_message,
+    question: str,
+    options: List[str],
+    poll_type,
+    allows_multiple_answers=True,
+    open_period=20
+):
+    if isinstance(update_or_message, Message):
+        message = update_or_message
+    elif isinstance(update_or_message, Update):
+        message = update_or_message.message
+    else:
+        raise ValueError('Invalid message/update passed')
+
+    sent_msg = message.reply_poll(
+        question=question,
+        options=options,
+        allows_multiple_answers=True,
+        open_period=20
+    )
+
+    database_manager.register_admin_poll(
+        sent_msg.poll.poll_id,
+        poll_type,
+        message.from_user.id
+    )
+
+
+class SingletonDecorator:
+    '''
+    https://python-3-patterns-idioms-test.readthedocs.io/en/latest/
+    Singleton.html
+    '''
+    def __init__(self, klass):
+        self.klass = klass
+        self.instance = None
+
+    def __call__(self,*args,**kwds):
+        if not self.instance:
+            self.instance = self.klass(*args, **kwds)
+        return self.instance

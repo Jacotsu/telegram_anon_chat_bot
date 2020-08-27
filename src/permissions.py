@@ -19,44 +19,32 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 
-from enum import IntFlag, auto, EnumMeta, unique
-from operator import or_ as _or_
-from functools import reduce
+from enum import IntFlag, auto, unique
+import utils
 
 
 class InvalidPermissionsError(Exception):
     pass
 
 
-class CustomEnumMetaForCaseInsensiviSubscript(EnumMeta):
-    # https://stackoverflow.com/questions/24716723/
-    # issue-extending-enum-and-redefining-getitem
-    def __getitem__(self, value):
-        if type(value) == str:
-            return super().__getitem__(value.upper())
-        else:
-            return super().__getitem__(value)
-
-
-def with_limits(enumeration):
-    # https://stackoverflow.com/questions/42251081/
-    # representation-of-all-values-in-flag-enum
-    "add NONE and ALL psuedo-members to enumeration"
-    none_mbr = enumeration(0)
-    all_mbr = enumeration(reduce(_or_, enumeration))
-    enumeration._member_map_['NONE'] = none_mbr
-    enumeration._member_map_['ALL'] = all_mbr
-    return enumeration
-
-
-@with_limits
+@utils.with_limits
 @unique
-class Permissions(IntFlag, metaclass=CustomEnumMetaForCaseInsensiviSubscript):
+class Permissions(IntFlag,
+                  metaclass=utils.CustomEnumMetaForCaseInsensiviSubscript):
     '''
     An enum that represents the current user's permissions
     NOTE TO DEVS: ONLY APPEND NEW PERMISSIONS, OTHERWISE THE PERMISSIONS STORED
     IN THE DATABASE WILL BE GARBLED
     '''
+    def __str__(self):
+        return ", ".join(
+            super().__str__()
+            .replace('Permissions.', '')
+            .replace('_', ' ')
+            .lower()
+            .split('|')
+        )
+
     # Basic permissions
     # Permission to receive message
     RECEIVE = auto()
@@ -82,6 +70,7 @@ class Permissions(IntFlag, metaclass=CustomEnumMetaForCaseInsensiviSubscript):
 
     # ---------------------------- [MEDIA PERMISSIONS] ------------------------
 
+    # requires send_document to work
     SEND_ANIMATION = auto()
     SEND_PHOTO = auto()
     SEND_CONTACT = auto()
@@ -117,7 +106,7 @@ class Permissions(IntFlag, metaclass=CustomEnumMetaForCaseInsensiviSubscript):
     SET_USER_PERMISSIONS = auto()
     SET_DEFAULT_PERMISSIONS = auto()
     SHOW_DEFAULT_PERMISSIONS = auto()
-    SET_SHOW_PERMISSIONS = auto()
+    SHOW_ALL_PERMISSIONS = auto()
 
     # ------------------------------- [ROLES] ---------------------------------
 
