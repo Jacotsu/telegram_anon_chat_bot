@@ -54,13 +54,13 @@ class BotManager:
             self._updater.bot.delete_webhook()
             self._updater.start_polling(1)
         else:
-            if self._config["Bot"]["UrlPath"]:
+            if self._config["Bot"]["Webhook"]["UrlPath"]:
                 self._updater.start_webhook(
-                    listen=self._config["Bot"]["ListenIp"],
-                    port=self._config["Bot"]["Port"],
-                    url_path=self._config["Bot"]["UrlPath"])
+                    listen=self._config["Bot"]["Webhook"]["ListenIp"],
+                    port=self._config["Bot"]["Webhook"]["Port"],
+                    url_path=self._config["Bot"]["Webhook"]["UrlPath"])
                 self._updater.bot.set_webhook(
-                    self._config["Bot"]["WebhookUrl"])
+                    self._config["Bot"]["Webhook"]["WebhookUrl"])
 
                 logger.info("Bot started in webhook mode"
                             f"{self._config['Bot']['ListenIp']}:"
