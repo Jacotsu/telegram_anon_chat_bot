@@ -207,6 +207,7 @@ class User:
             self.first_name = user_id_or_user_obj.first_name
             self.last_name = user_id_or_user_obj.last_name
             self.username = user_id_or_user_obj.username
+            self.user_id = user_id_or_user_obj.id
             self._fmt_str = '[{first_name}{last_name}{username}({id})]'
         else:
             raise ValueError('Invalid user id/user object '
