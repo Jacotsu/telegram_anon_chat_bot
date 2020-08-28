@@ -19,10 +19,11 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable
-import logging
+from telegram import User as tg_User
 import database
 from permissions import Permissions
 from user_resolver import UserResolver, UserResolverError
@@ -182,28 +183,38 @@ class User:
 
     def __init__(self,
                  db_man,
-                 user_id: int,
+                 user_id_or_user_obj,
                  permissions: Permissions = Permissions.NONE,
                  resolver: UserResolver = None
                  ):
         self._db_man = db_man
-        self.user_id = user_id
 
-        try:
-            if resolver:
-                info = resolver.get_user_info(user_id)
-                self.first_name = info['first_name']
-                self.last_name = info['last_name']
-                self.username = info['id']
-                self._fmt_str = '[{first_name}{last_name}{username}({id})]'
-            else:
-                raise UserResolverError
-        except UserResolverError:
-            self._fmt_str = '[{id}]'
+        if isinstance(user_id_or_user_obj, int) and user_id_or_user_obj > 0:
+            self.user_id = user_id_or_user_obj
+            try:
+                if resolver:
+                    info = resolver.get_user_info(self.user_id)
+                    self.first_name = info['first_name']
+                    self.last_name = info['last_name']
+                    self.username = info['username']
+                    self._fmt_str = '[{first_name}{last_name}{username}({id})]'
+                else:
+                    raise UserResolverError
+            except UserResolverError:
+                self._fmt_str = '[{id}]'
+
+        elif isinstance(user_id_or_user_obj, tg_User):
+            self.first_name = user_id_or_user_obj.first_name
+            self.last_name = user_id_or_user_obj.last_name
+            self.username = user_id_or_user_obj.username
+            self._fmt_str = '[{first_name}{last_name}{username}({id})]'
+        else:
+            raise ValueError('Invalid user id/user object '
+                             f'{user_id_or_user_obj}')
 
         # Creates user if it doesn't exist
-        if not self._db_man.user_exists(user_id):
-            self._db_man.create_user(user_id)
+        if not self._db_man.user_exists(self.user_id):
+            self._db_man.create_user(self.user_id)
             self.permissions = permissions
             self.captcha_status
 
