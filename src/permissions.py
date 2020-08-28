@@ -51,11 +51,7 @@ class Permissions(IntFlag,
                 yield perm
 
     def __iter__(self):
-        self._perm_iterator = self._perm_generator()
-        return self
-
-    def __next__(self):
-        return next(self._perm_iterator)
+        return self._perm_generator()
 
     # Basic permissions
     # Permission to receive message
