@@ -57,7 +57,7 @@ class UserResolver:
         '''
         replied_msg = update.message.reply_to_message
         # Remove the issued command from the command line and then split it
-        split_cmd = update.message.text.split()[1:].split(',')
+        split_cmd = " ".join(update.message.text.split()[1:]).split(',')
         split_cmd_len = len(split_cmd)
 
         if replied_msg:
