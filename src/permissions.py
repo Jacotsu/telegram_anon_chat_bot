@@ -45,6 +45,18 @@ class Permissions(IntFlag,
             .split('|')
         )
 
+    def _perm_generator(self):
+        for perm in Permissions:
+            if perm in self:
+                yield perm
+
+    def __iter__(self):
+        self._perm_iterator = self._perm_generator()
+        return self
+
+    def __next__(self):
+        return next(self._perm_iterator)
+
     # Basic permissions
     # Permission to receive message
     RECEIVE = auto()
