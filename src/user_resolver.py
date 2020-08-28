@@ -49,21 +49,22 @@ class UserResolver:
     def acquire_target_user_from_cmd(
             self,
             update: Update,
-            target_position: int = 1) -> custom_dataclasses.User:
+            target_position: int = 0) -> custom_dataclasses.User:
         '''
         If update is a reply to a message the sender of the original message
         is returned, otherwise it takes the text at the specified position
         and tries to resolve it if it's a username
         '''
         replied_msg = update.message.reply_to_message
-        split_cmd = update.message.text.split()
+        # Remove the issued command from the command line and then split it
+        split_cmd = update.message.text.split()[1:].split(',')
         split_cmd_len = len(split_cmd)
 
         if replied_msg:
             return custom_dataclasses.User(self._db_man, replied_msg.from_user)
         else:
             if split_cmd_len > target_position:
-                return self.resolve(split_cmd[target_position])
+                return self.resolve(split_cmd[target_position].strip())
             else:
                 raise ValueError('The command string is too short to contain'
                                  'the target word '
