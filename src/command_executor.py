@@ -336,14 +336,9 @@ class CommandExecutor:
         # Creates a new user if it doesn't exist
         usual = self._db_man.user_exists(tg_user.id)
         user = User(self._db_man, tg_user.id)
-        default_role_name = self._config['Roles']['DefaultRole']
-        user.role = Role(self._db_man, default_role_name)
 
-        join_banner = self._config['Banners']['JoinBanner'] or \
-            'Congratulations you have joined the chat'
-        rejoin_banner = self._config['Banners']['RejoinBanner'] or \
-            'Welcome back'
-
+        join_banner = self._config['Banners']['JoinBanner']
+        rejoin_banner = self._config['Banners']['RejoinBanner']
         if usual:
             if not user.is_active:
                 logger.info(
@@ -356,7 +351,10 @@ class CommandExecutor:
                 f'{user_log_str(update)} joined the chat'
             )
             update.message.reply_text(join_banner)
+            default_role_name = self._config['Roles']['DefaultRole']
+            user.role = Role(self._db_man, default_role_name)
             user.join()
+
 
     @log_action(logger)
     def quit(self, update, context):
