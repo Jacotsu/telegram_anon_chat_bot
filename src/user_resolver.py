@@ -23,6 +23,7 @@ from telegram import Update, Message
 from telethon.sync import TelegramClient
 from telethon.tl.functions.users import GetFullUserRequest
 from utils import SingletonDecorator
+import custom_dataclasses
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,8 @@ class UserResolverError(Exception):
 
 @SingletonDecorator
 class UserResolver:
-    def __init__(self, config):
+    def __init__(self, database_manager, config):
+        self._db_man = database_manager
         api_id = config["UsernameResolver"]["ApiId"]
         api_hash = config["UsernameResolver"]["ApiHash"]
 
@@ -44,7 +46,10 @@ class UserResolver:
         else:
             self._tg_client = None
 
-    def acquire_target_user_from_cmd(self, update, target_position=1):
+    def acquire_target_user_from_cmd(
+            self,
+            update: Update,
+            target_position: int = 1) -> custom_dataclasses.User:
         '''
         If update is a reply to a message the sender of the original message
         is returned, otherwise it takes the text at the specified position
@@ -55,7 +60,7 @@ class UserResolver:
         split_cmd_len = len(split_cmd)
 
         if replied_msg:
-            return replied_msg.from_user.id
+            return custom_dataclasses.User(self._db_man, replied_msg.from_user)
         else:
             if split_cmd_len > target_position:
                 return self.resolve(split_cmd[target_position])
@@ -64,15 +69,17 @@ class UserResolver:
                                  'the target word '
                                  f'(target_position={target_position})')
 
-    def resolve(self, value_or_update) -> int:
+    def resolve(self, value_or_update) -> custom_dataclasses.User:
         if type(value_or_update) == int:
-            return value_or_update
+            return custom_dataclasses.User(
+                self._db_man, value_or_update, resolver=self)
         elif type(value_or_update) == str:
             if self._tg_client:
                 with self._tg_client as tg_client:
                     peer_id = tg_client.get_peer_id(value_or_update)
                     if peer_id:
-                        return peer_id
+                        return custom_dataclasses.User(
+                            self._db_man, peer_id, resolver=self)
                     else:
                         raise ValueError(f'{value_or_update} is an '
                                          'invalid username')
@@ -80,9 +87,11 @@ class UserResolver:
                 raise UserResolverError('Username resolution is not '
                                         'configured')
         elif type(value_or_update) == Update:
-            return value_or_update.message.from_user.id
+            return custom_dataclasses.User(
+                self._db_man, value_or_update.message.from_user)
         elif type(value_or_update) == Message:
-            return value_or_update.from_user.id
+            return custom_dataclasses.User(
+                self._db_man, value_or_update.from_user)
         else:
             raise ValueError(f'{value_or_update}\'s type is wrong')
 
