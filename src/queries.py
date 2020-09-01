@@ -254,27 +254,17 @@ BAN_USER = '''
 '''
 
 UNBAN_USER = '''
-    WITH new (user_id, unix_end_date, reason) AS (
-    VALUES(:user_id, strftime("%s", 'now'), :reason))
-    UPDATE ban_log 
-    SET
-        unix_end_date = strftime("%s", 'now')*1E6,
-        reason = old.reason || " " || new.reason || "\n"
-    WHERE user_id = :user_id
-        AND unix_start_date <= strftime("%s", 'now')*1E6
-        AND strftime("%s", 'now')*1E6 <= old.unix_end_date;
-
-
-    SELECT new.user_id, old.unix_start_date, new.unix_end_date*1E6,
-        
+    WITH new (user_id, unix_end_date, reason) AS (VALUES(:user_id,
+        strftime("%s", 'now')*1E6, :reason))
+    REPLACE INTO ban_log
+        (rowid, user_id, unix_start_date, unix_end_date, reason)
+    SELECT old.rowid, new.user_id, old.unix_start_date, new.unix_end_date*1E6,
+        old.reason || " " || new.reason || "\n"
     FROM new
     LEFT JOIN ban_log AS old USING (user_id)
-    WHERE 
-    UPDATE ban_log
-    SET
-        unix_end_date = strftime("%s", 'now')*1E6,
-        reason = 
-
+    WHERE
+        unix_start_date <= strftime("%s", 'now')*1E6
+        AND strftime("%s", 'now')*1E6 <= old.unix_end_date;
 '''
 
 IS_USER_BANNED = '''
@@ -411,6 +401,7 @@ GET_USER_BAN_LOG = '''
     ORDER BY unix_start_date ASC;
 '''
 
+# FIXME: missing last join entry
 GET_USER_JOIN_QUIT_LOG = '''
     SELECT unix_join_date/1E6 as unix_join_date,
         unix_quit_date/1E6 as unix_quit_date
