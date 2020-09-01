@@ -453,7 +453,7 @@ class CommandExecutor:
                         split_cmd[0], settings={'TIMEZONE': 'UTC'}
                     )
                     if not ban_end_date:
-                        reason = split_cmd[0]
+                        reason = ''
                 elif split_cmd_len == 3:
                     ban_end_date = dateparser.parse(
                         split_cmd[1], settings={'TIMEZONE': 'UTC'}
@@ -535,7 +535,7 @@ class CommandExecutor:
             if split_cmd_len == 1:
                 reason = ''
             elif split_cmd_len == 2:
-                reason = split_cmd[1:]
+                reason = split_cmd[1]
             else:
                 raise ValueError(
                     'Wrong number of parameters passed to unban'
@@ -549,7 +549,8 @@ class CommandExecutor:
                     if reason:
                         log_msg = f'{user_to_unban} has been unbanned by '\
                             f'{admin_user} for {reason}'
-                        user_to_unban.unban(reason)
+                        user_to_unban.unban(f'Unbanned by {admin_user} '
+                        f'for {reason}')
                     else:
                         log_msg = f'{user_to_unban} has been unbanned by '\
                             f'{admin_user} for {reason}'
