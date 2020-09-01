@@ -1036,7 +1036,6 @@ class CommandExecutor:
                 role_to_delete = Role(self._db_man, split_cmd[0])
                 # Only admins with higher power than set a role as default
                 if admin_user.role.power > role_to_delete.power:
-                    role_to_delete.delete()
                     self._msg_broker.send_or_forward_msg(
                         admin_user,
                         escape_markdown_chars(
@@ -1046,6 +1045,7 @@ class CommandExecutor:
                     logger.info(
                         f'{admin_user} has deleted the role: {role_to_delete}'
                     )
+                    role_to_delete.delete()
                 else:
                     self._msg_broker.send_or_forward_msg(
                         admin_user,
