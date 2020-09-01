@@ -514,7 +514,7 @@ class DatabaseManager:
 
     def set_role_power(self, role_name: str, new_power: int):
         self._execute_simple_set_query(
-            queries.SET_ROLE_PERMISSIONS,
+            queries.SET_ROLE_POWER,
             {'role_name': role_name,
              'role_power': new_power}
         )

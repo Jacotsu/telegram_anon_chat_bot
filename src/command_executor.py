@@ -972,12 +972,12 @@ class CommandExecutor:
 
     @log_action(logger)
     def set_role_power(self, update, context):
+        admin_user = User(self._db_man, update.message.from_user)
         split_cmd = split_cmd_line(update.message.text)
         split_cmd_len = len(split_cmd)
 
         if split_cmd_len == 2:
             if self._db_man.does_role_exist(split_cmd[0]):
-                admin_user = User(self._db_man, update.message.from_user)
                 role = Role(self._db_man, split_cmd[0])
                 try:
                     new_power = int(split_cmd[1])
@@ -985,6 +985,13 @@ class CommandExecutor:
                     if admin_user.role.power > role.power:
                         if 0 <= new_power < admin_user.role.power:
                             role.power = new_power
+                            self._msg_broker.send_or_forward_msg(
+                                admin_user,
+                                escape_markdown_chars(
+                                    f'{split_cmd[0]}\'s power set to '
+                                    f'{new_power}'
+                                )
+                            )
                         else:
                             self._msg_broker.send_or_forward_msg(
                                 admin_user,
@@ -1005,8 +1012,10 @@ class CommandExecutor:
             else:
                 self._msg_broker.send_or_forward_msg(
                     admin_user,
-                    f'Role {split_cmd[0]} does not exist\. '
-                    'create it with /create_role'
+                    escape_markdown_chars(
+                        f'Role {split_cmd[0]} does not exist. '
+                        'create it with /create_role'
+                    )
                 )
         else:
             self._msg_broker.send_or_forward_msg(
