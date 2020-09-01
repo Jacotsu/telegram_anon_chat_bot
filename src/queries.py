@@ -258,7 +258,7 @@ UNBAN_USER = '''
         strftime("%s", 'now')*1E6, :reason))
     REPLACE INTO ban_log
         (rowid, user_id, unix_start_date, unix_end_date, reason)
-    SELECT old.rowid, new.user_id, old.unix_start_date, new.unix_end_date*1E6,
+    SELECT old.rowid, new.user_id, old.unix_start_date, new.unix_end_date,
         old.reason || " " || new.reason || "\n"
     FROM new
     LEFT JOIN ban_log AS old USING (user_id)
