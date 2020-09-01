@@ -17,10 +17,12 @@ setup(
     author="jacotsu",
     license='GPLv3+',
     install_requires=[
+        "dateparser",
+        "configobj",
         "pytimeparyse",
         "captcha",
-        "python-telegram-bot",
-        "telethon",
+        "python_telegram_bot",
+        "Telethon",
         "validate"
     ],
     python_requires='>=3.8',

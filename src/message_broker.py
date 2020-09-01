@@ -24,7 +24,7 @@ import logging
 from telegram.ext import MessageHandler, Filters, messagequeue
 from telegram import Message, Audio, Contact, Document, Animation,\
         Location, PhotoSize, Sticker, Venue, Video, VideoNote, Voice,\
-        InputMediaPhoto
+        InputMediaPhoto, ParseMode
 from custom_filters import ActiveUsersFilter, UnbannedUsersFilter,\
         PassedCaptchaFilter, MessagePermissionsFilter, AntiFloodFilter
 from permissions import Permissions
@@ -45,34 +45,34 @@ class MessageBroker:
         self._captcha_manager = captcha_manager
         self._poll_pool = {}
         self._message_forward_map = {
-            Audio: lambda x, y: self._updater.bot.send_audio(
-                x.user_id, y.audio.file_id, y.caption),
-            Contact: lambda x, y: self._updater.bot.send_contact(
-                x.user_id, contact=y.contact),
-            Document: lambda x, y: self._updater.bot.send_document(
-                x.user_id, y.document, caption=y.caption),
+            Audio: lambda x, y:  self._updater.bot.send_audio(
+                x.id, y.audio.file_id, y.caption),
+            Contact: lambda x, y:  self._updater.bot.send_contact(
+                x.id, contact=y.contact),
+            Document: lambda x, y:  self._updater.bot.send_document(
+                x.id, y.document, caption=y.caption),
             # GIF or H.264/MPEG-4 AVC video without sound
             # Requires document
-            Animation: lambda x, y: self._updater.bot.send_animation(
-                x.user_id, y.animation, caption=y.caption),
-            Location: lambda x, y: self._updater.bot.send_location(
-                x.user_id, location=y.location),
+            Animation: lambda x, y:  self._updater.bot.send_animation(
+                x.id, y.animation, caption=y.caption),
+            Location: lambda x, y:  self._updater.bot.send_location(
+                x.id, location=y.location),
             # Could be one of the following:
             # - Single photo
             # - Photo album
-            list: lambda x, y: self._send_photo(x.user_id, y),
-            Sticker: lambda x, y: self._updater.bot.send_sticker(
-                x.user_id, y.sticker),
-            Venue: lambda x, y: self._updater.bot.send_venue(
-                x.user_id, venue=y.venue),
-            Video: lambda x, y: self._updater.bot.send_video(
-                x.user_id, y.video.file_id),
-            VideoNote: lambda x, y: self._updater.bot.send_video_note(
-                x.user_id, y.video_note.file_id),
-            Voice: lambda x, y: self._updater.bot.send_voice(
-                x.user_id, y.voice.file_id, y.caption),
-            type(None): lambda x, y: self._process_special_message(
-                x.user_id, y)
+            list: lambda x, y:  self._send_photo(x.id, y),
+            Sticker: lambda x, y:  self._updater.bot.send_sticker(
+                x.id, y.sticker),
+            Venue: lambda x, y:  self._updater.bot.send_venue(
+                x.id, venue=y.venue),
+            Video: lambda x, y:  self._updater.bot.send_video(
+                x.id, y.video.file_id),
+            VideoNote: lambda x, y:  self._updater.bot.send_video_note(
+                x.id, y.video_note.file_id),
+            Voice: lambda x, y:  self._updater.bot.send_voice(
+                x.id, y.voice.file_id, y.caption),
+            type(None): lambda x, y:  self._process_special_message(
+                x.id, y)
         }
 
         self._is_messages_queued_default = True
@@ -83,17 +83,18 @@ class MessageBroker:
 
         self._updater.dispatcher.add_handler(
             # NB: The captcha filter must come before the permissions filter
-            # otherwhise new user won't be able to pass the verification
+            # otherwhise new users won't be able to pass the verification
             MessageHandler(
-                UnbannedUsersFilter(self._db_man) &
+                UnbannedUsersFilter(self._db_man, self) &
+                ~Filters.command &
                 PassedCaptchaFilter(
                     self._db_man,
                     self._captcha_manager,
-                    lambda x: User(self._db_man, x.message.from_user.id).join()
+                    config,
+                    self
                 ) &
-                ~Filters.command &
-                AntiFloodFilter(self._db_man, config) &
-                MessagePermissionsFilter(self._db_man),
+                AntiFloodFilter(self._db_man, config, self) &
+                MessagePermissionsFilter(self._db_man, self),
                 callback=self._message_callback))
 
     def _send_photo(self, user_id, message):
@@ -103,7 +104,7 @@ class MessageBroker:
     def _process_special_message(self, user_id, message):
         if message.poll:
             if message.poll.id in self._poll_pool:
-                self._updater.bot.forward_message(
+                sent_msg = self._updater.bot.forward_message(
                     user_id,
                     self._poll_pool[message.poll.id]['sender_id'],
                     message_id=self._poll_pool[message.poll.id]
@@ -125,12 +126,14 @@ class MessageBroker:
                 }
                 message.delete()
         elif message.text:
-            self._updater.bot.send_message(
+            sent_msg = self._updater.bot.send_message(
                 user_id,
                 message.text
             )
         else:
             message.reply_text('Unsupported message type')
+            return None
+        return sent_msg
 
     def _message_callback(self, update, context):
         message = update.message
@@ -138,20 +141,23 @@ class MessageBroker:
             # Check for admin polls
             try:
                 # !IMPORTANT! always check that the answer sender is the poll
-                # creator, otherwise non admins/mods could vote by voting
+                # creator, otherwise non admins/mods could vote by through
                 # a forwarded poll
                 data = self._db_man.get_admin_poll(message.poll.id)
                 if data['creator_user_id'] == message.from_user.id:
                     poll_type = data['poll_type']
                     # Should turn this into a map
-                    if poll_type == PollTypes.SET_DEFAULT_ROLE:
-                        message.reply_text('default_role')
+                    if poll_type == PollTypes.SET_DEFAULT_PERMISSIONS:
+                        message.reply_text('setting default permissions')
                         raise NotImplementedError
                     elif poll_type == PollTypes.SET_USER_PERMISSIONS:
+                        message.reply_text('setting user permissions')
                         raise NotImplementedError
                     elif poll_type == PollTypes.SET_ROLE_PERMISSIONS:
+                        message.reply_text('setting role permission')
                         raise NotImplementedError
                     elif poll_type == PollTypes.SET_DEFAULT_ROLE:
+                        message.reply_text('setting default role')
                         raise NotImplementedError
                 else:
                     logger.warning(f'{user_log_str(message)} has tried to'
@@ -162,7 +168,8 @@ class MessageBroker:
                                    )
                 #poll_id, poll_type, creator_user_id, extra_data
             except ValueError:
-                self.broadcast_message(update.message)
+                pass
+        self.broadcast_message(update.message)
 
     def broadcast_message(self,
                           message,
@@ -180,30 +187,55 @@ class MessageBroker:
         else:
             for user in effective_users:
                 self.send_or_forward_msg(user, message)
+
             # Trying to free some memory
             self._poll_pool = {}
 
     @messagequeue.queuedmessage
-    def send_or_forward_msg(self, user, message):
+    def send_or_forward_msg(self, user, message,
+                            parse_mode=ParseMode.MARKDOWN_V2):
         '''
         Sends the anonymized message to the specified user. If the user has the
         VIEW_CLEAR_MSGS permission the message is forwarded
         '''
-        logger.debug(f'Relaying message to {user.user_id}')
+        logger.debug(f'Relaying message to {user}')
         if isinstance(message, Message):
             if Permissions.VIEW_CLEAR_MSGS in user.permissions:
-                self._updater.bot.forward_message(
-                    chat_id=user.user_id,
+                msg = self._updater.bot.forward_message(
+                    chat_id=user.id,
                     from_chat_id=message.chat_id,
                     message_id=message.message_id
                 )
             else:
-                self._message_forward_map[type(message.effective_attachment)](
-                    user,
-                    message
-                )
+                msg = self\
+                    ._message_forward_map[type(message.effective_attachment)](
+                        user,
+                        message
+                    )
+
+            # Batch registering is more efficient but harder to implement due
+            # to the delayed message queue
+            self._db_man.register_messages([
+                {
+                    'sender_id': message.from_user.id,
+                    'receiver_id': msg.chat_id,
+                    'sender_message_id': message.message_id,
+                    'receiver_message_id': msg.message_id,
+                    'unix_sent_date': msg.date
+                }
+            ])
         else:
-            self._updater.bot.send_message(
-                user.user_id,
-                message
+            msg = self._updater.bot.send_message(
+                user.id,
+                message,
+                parse_mode=parse_mode
             )
+            self._db_man.register_messages([
+                {
+                    'sender_id': self._updater.bot.id,
+                    'receiver_id': msg.chat_id,
+                    'sender_message_id': 0,
+                    'receiver_message_id': msg.message_id,
+                    'unix_sent_date': msg.date
+                }
+            ])

@@ -22,16 +22,38 @@
 import logging
 from telegram.ext.filters import BaseFilter
 from telegram.ext import Filters
-from permissions import Permissions, InvalidPermissionsError
+from telegram import Update, Message
+from permissions import Permissions
 from datetime import datetime, timedelta
 from pytimeparse.timeparse import timeparse
-from captcha_manager import CaptchaManager, MaxCaptchaTriesError,\
-        CaptchaFloodError
+from captcha_manager import CaptchaManager
+from custom_exceptions import MaxCaptchaTriesError, CaptchaFloodError,\
+    InvalidPermissionsError
 from custom_dataclasses import User
 from custom_logging import user_log_str
+from misc import user_join
 
 
 logger = logging.getLogger(__name__)
+
+
+class MessageBrokeredFilter(BaseFilter):
+    def __init__(self, database_manager, message_broker=None, *args, **kwargs):
+        self._db_man = database_manager
+        self._msg_broker = message_broker
+        super().__init__(*args, **kwargs)
+
+    def send_message(self,  update_or_message, msg):
+        if isinstance(update_or_message, Update):
+            message = update_or_message.message
+        elif isinstance(update_or_message, Message):
+            message = update_or_message
+
+        user = User(self._db_man, message.from_user)
+        if self._msg_broker:
+            self._msg_broker.send_or_forward_msg(user, msg)
+        else:
+            update_or_message.reply_text(msg)
 
 
 class AnonPollFilter(Filters._Poll):
@@ -39,15 +61,9 @@ class AnonPollFilter(Filters._Poll):
         return super().filter(message) and bool(message.poll.is_anonymous)
 
 
-class SimpleTextFilter(BaseFilter):
-    def filter(self, message):
-        return bool(message.text)
-
-
-class AntiFloodFilter(BaseFilter):
-    def __init__(self, database_manager, config):
-        super().__init__()
-        self._db_man = database_manager
+class AntiFloodFilter(MessageBrokeredFilter):
+    def __init__(self, database_manager, config, message_broker=None):
+        super().__init__(database_manager, message_broker)
         self._default_time_delta = timedelta(seconds=timeparse(
             config["AntiFlood"]["MinimumDelayBetweenMessages"]
         ))
@@ -57,8 +73,7 @@ class AntiFloodFilter(BaseFilter):
         self._last_cleanup_time = datetime.utcnow()
 
     def filter(self, message):
-        tg_user = message.from_user
-        user = User(self._db_man, tg_user.id)
+        user = User(self._db_man, message.from_user)
         now = datetime.utcnow()
 
         if now - self._last_cleanup_time > self._cleanup_time_delta:
@@ -71,36 +86,35 @@ class AntiFloodFilter(BaseFilter):
 
         if Permissions.BYPASS_ANTIFLOOD in user.permissions:
             return True
-        else:
-            try:
-                delay = user.chat_delay
-            except ValueError:
-                delay = self._default_time_delta
 
-            try:
-                elapsed_time = now - \
-                        self._last_message_dict[tg_user.id]['last_msg_time']
-                if elapsed_time > delay:
-                    # sent_warning is necessary to avoid a DOS by malicious
-                    # users that try to flood anyway
-                    self._last_message_dict[tg_user.id] = {
-                        'last_msg_time': now,
-                        'sent_warning': False
-                    }
-                    return True
-            except KeyError:
-                self._last_message_dict[tg_user.id] = {
+        try:
+            delay = user.chat_delay
+        except ValueError:
+            delay = self._default_time_delta
+
+        try:
+            elapsed_time = now - \
+                    self._last_message_dict[user.id]['last_msg_time']
+            if elapsed_time > delay:
+                # sent_warning is necessary to avoid a DOS by malicious
+                # users that try to flood anyway
+                self._last_message_dict[user.id] = {
                     'last_msg_time': now,
                     'sent_warning': False
                 }
                 return True
+        except KeyError:
+            self._last_message_dict[user.id] = {
+                'last_msg_time': now,
+                'sent_warning': False
+            }
+            return True
 
-            if not self._last_message_dict[tg_user.id]['sent_warning']:
-                logger.warning(f'{user_log_str(message)} is trying to flood '
-                               'the chat')
-                message.reply_text(f'You must waith {delay - elapsed_time} '
-                                   'before sending another message or command')
-            return False
+        if not self._last_message_dict[user.id]['sent_warning']:
+            logger.warning(f'{user} is trying to flood the chat')
+            self.send_message(message, f'You must wait {delay - elapsed_time} '
+                              'before sending another message or command')
+        return False
 
 
 class ActiveUsersFilter(BaseFilter):
@@ -109,77 +123,96 @@ class ActiveUsersFilter(BaseFilter):
     '''
     def __init__(self, database_manager):
         self._db_man = database_manager
-        self.update_filter = True
 
-    def filter(self, update):
-        tg_user = update.message.from_user
-        if User(self._db_man, tg_user.id).is_active:
+    def filter(self, message):
+        user = User(self._db_man, message.from_user)
+        if user.is_active:
             return True
-        else:
-            logger.debug(
-                f'{user_log_str(update)} Update ({update.message.text}) '
-                'was filtered because he\'s not active'
-            )
-            return False
+
+        logger.debug(
+            f'{user}\'s Message ({message}) was filtered because he\'s '
+            'not active'
+        )
+        return False
 
 
-class UnbannedUsersFilter(BaseFilter):
+class UnbannedUsersFilter(MessageBrokeredFilter):
     '''
     This class filters the messages/commands of banned users
     '''
-    def __init__(self, database_manager):
+    def __init__(self, database_manager, message_broker=None):
+        super().__init__(database_manager, message_broker)
         self._db_man = database_manager
-        self.update_filter = True
+        # We only send the message once, to avoid spambots that would saturate
+        # our message bandwidth
+        self._sent_warnings = {}
 
-    def filter(self, update):
-        tg_user = update.message.from_user
-        if not User(self._db_man, tg_user.id).is_banned:
+    def filter(self, message):
+        user = User(self._db_man, message.from_user)
+        if not user.is_banned:
             return True
-        else:
-            logger.debug(
-                f'{user_log_str(update)} banned user has tried to use the bot'
-            )
-            update.message.reply_text('You have been banned from the bot')
-            return False
+
+        logger.debug(
+            f'banned user {user} has tried to use the bot'
+        )
+
+        if not self._sent_warnings[user.id]:
+            self.send_message(message, 'You have been banned from the bot')
+            self._sent_warnings[user.id] = True
+        return False
 
 
-class CommandPermissionsFilter(BaseFilter):
-    def __init__(self, database_manager, command_dicts):
-        self._db_man = database_manager
+class CommandPermissionsFilter(MessageBrokeredFilter):
+    def __init__(self, database_manager, command_dicts, message_broker=None):
+        super().__init__(database_manager, message_broker)
         self._command_dicts = command_dicts
 
     def filter(self, message):
-        tg_user = message.from_user
-        user = User(self._db_man, tg_user.id)
+        user = User(self._db_man, message.from_user)
         try:
-            cmd = message.text.split()[0]
-            cmd_dict = self._command_dicts[cmd[1:]]
+            # Take the first word an drop the initial slash
+            cmd = message.text.split()[0][1:]
+            cmd_dict = self._command_dicts[cmd]
             if cmd_dict['permissions_required'] in user.permissions:
                 return True
             else:
-                message.reply_text('You do not have the necessary permissions '
-                                   'to execute this command')
-
-                logger.warning(f'{user_log_str(message)} has tried to execute '
-                               f'{cmd} without the appropriate permissions')
+                self.send_message(
+                    message,
+                    'You do not have the necessary permissions '
+                    'to execute this command'
+                )
+                logger.warning(f'{user} has tried to execute {cmd} without '
+                               'the appropriate permissions')
         except (KeyError, IndexError):
-            message.reply_text('Unknown command')
 
+            self.send_message(
+                message,
+                'Unknown command'
+            )
         return False
 
-class MessagePermissionsFilter(BaseFilter):
+
+class MessagePermissionsFilter(MessageBrokeredFilter):
     '''
     This class filters the messages of users that don't have the
     necessary permissions
     '''
+    update_filter = True
 
-    def __init__(self, database_manager):
-        self._db_man = database_manager
-        self.update_filter = True
+    def __init__(self, database_manager, message_broker=None):
+        super().__init__(database_manager, message_broker)
 
         self._filter_map = {
             Permissions.SEND_SIMPLE_TEXT: {
-                'filter': SimpleTextFilter(),
+                'filter':
+                Filters.text & ~Filters.entity('mention') &
+                ~Filters.entity('hashtag') & ~Filters.entity('cashtag') &
+                ~Filters.entity('phone_number') & ~Filters.entity('email') &
+                ~Filters.entity('bold') & ~Filters.entity('italic') &
+                ~Filters.entity('code') & ~Filters.entity('underline') &
+                ~Filters.entity('strikethrough') & ~Filters.entity('pre') &
+                ~Filters.entity('url') & ~Filters.entity('text_link') &
+                ~Filters.entity('text_mention'),
                 'user_msg': 'You cannot send messages',
                 'log_msg': '{user_log_str} has tried to send a message'
                            'with invalid permissions ({user_perm}) '
@@ -347,6 +380,13 @@ class MessagePermissionsFilter(BaseFilter):
                            'audio with invalid permissions '
                            '({user_perm}) {message}'
             },
+            Permissions.SEND_VOICE: {
+                'filter': Filters.voice,
+                'user_msg': 'You cannot send voice notes',
+                'log_msg': '{user_log_str} has tried to send a '
+                           'voice note with invalid permissions '
+                           '({user_perm}) {message}'
+            },
             Permissions.SEND_STICKER: {
                 'filter': Filters.sticker,
                 'user_msg': 'You cannot send stickers',
@@ -356,123 +396,118 @@ class MessagePermissionsFilter(BaseFilter):
             },
             Permissions.SEND_ANON_POLL: {
                 'filter': AnonPollFilter(),
-                'user_msg': 'You cannot send hashtags',
-                'log_msg': '{user_log_str} has tried to send an '
-                           'hashtag with invalid permissions '
+                'user_msg': 'You cannot send polls',
+                'log_msg': '{user_log_str} has tried to send a '
+                           'poll with invalid permissions '
+                           '({user_perm}) {message}'
+            },
+            Permissions.FORWARD: {
+                'filter': Filters.forwarded,
+                'user_msg': 'You cannot forward messages',
+                'log_msg': '{user_log_str} has tried to forward a '
+                           'message with invalid permissions '
                            '({user_perm}) {message}'
             }
         }
 
     def filter(self, update):
-        tg_user = update.message.from_user
-        user = User(self._db_man, tg_user.id)
+        user = User(self._db_man, update.message.from_user)
+        data_filter = None
 
-        for perm in Permissions:
-            try:
-                perm_data = self._filter_map[perm]
-                if perm in user.permissions:
-                    data_filter = ~Filters.command | perm_data['filter']
-                else:
-                    data_filter = ~Filters.command & ~perm_data['filter']
-                if not data_filter.filter(update):
-                    raise InvalidPermissionsError()
-            except KeyError:
-                pass
-            except InvalidPermissionsError:
-                update.message.reply_text(perm_data['user_msg'])
-                logger.debug(perm_data['log_msg'].format(
-                    user_log_str=user_log_str(update.message),
+        for perm in set(self._filter_map) & set(user.permissions):
+            perm_data = self._filter_map[perm]
+            if data_filter:
+                data_filter |= perm_data['filter']
+            else:
+                data_filter = perm_data['filter']
+
+        if data_filter and data_filter(update):
+            return True
+
+        for perm, data in self._filter_map.items():
+            if data['filter'](update):
+                self.send_message(update, data['user_msg'])
+                logger.debug(data['log_msg'].format(
+                    user_log_str=user,
                     user_perm=user.permissions,
                     message=update.message
                 ))
                 return False
 
-        return True
+        self.send_message(update, 'Unsupported message type')
+        return False
 
 
-class PassedCaptchaFilter(BaseFilter):
+class PassedCaptchaFilter(MessageBrokeredFilter):
     '''
     This class filters the messages/commands of users that didn't pass the
     captcha verification
     '''
 
-    def __init__(self, database_manager, captcha_manager,
-                 on_success_callback=None):
-        self._db_man = database_manager
-        self.update_filter = True
+    def __init__(self, database_manager, captcha_manager, config,
+                 message_broker=None):
+        super().__init__(database_manager, message_broker)
         self._last_attempt_dict = {}
         self._captcha_manager = captcha_manager
-        self._on_success_callback = on_success_callback
+        self._config = config
 
     def filter(self, update):
-        tg_user = update.message.from_user
-        user = User(self._db_man, tg_user.id)
+        user = User(self._db_man, update.from_user)
         if user.captcha_status.passed:
             return True
-        else:
-            delay = self._captcha_manager.\
-                _config["Captcha"]["TimeDelayBetweenAttempts"]
-            # Proceed with captcha verification
-            if user.captcha_status.current_value:
-                try:
-                    self._captcha_manager.submit_captcha(
-                        user,
-                        update.message.text
-                    )
-                    if user.captcha_status.passed:
-                        logger.info(f'{user_log_str(update)} has passed the '
-                                    'captcha challenge')
-                        update.message.reply_text('You passed the captcha')
-                        if self._on_success_callback:
-                            self._on_success_callback(update)
-                        return True
-                    else:
-                        update.message.reply_text('Wrong captcha')
-                        max_tries = self._captcha_manager._config["Captcha"]\
-                            ["MaxCaptchaTries"]
-                        logger.info(
-                            f'{user_log_str(update)} has failed the '
-                            'captcha challenge'
-                            f' ({user.captcha_status.failed_attempts}/'
-                            f'{max_tries})')
-                except MaxCaptchaTriesError as e:
-                    update.message.reply_text(
-                        e.reason
-                    )
-                    if e.is_ban:
-                        logger.info(f'{user_log_str(update)} has been banned '
-                                    f'until {e.end_date} for failing captcha '
-                                    'auth too may times')
-                    elif e.is_kick:
-                        logger.info(f'{user_log_str(update)} has been kicked '
-                                    'for failing captcha '
-                                    'auth too may times')
-                except CaptchaFloodError:
-                    if not self._last_attempt_dict[tg_user.id]['sent_warning']:
-                        logger.info(f'{user_log_str(update)} is flooding the'
-                                    'captcha')
-                        update.message.reply_text(
-                            f'You can try once every {delay}'
-                        )
 
-                    self._last_attempt_dict[tg_user.id] = {
+        # Proceed with captcha verification
+        if user.captcha_status.current_value:
+            try:
+                self._captcha_manager.submit_captcha(
+                    user,
+                    update.text
+                )
+                if user.captcha_status.passed:
+                    logger.info(f'{user} has passed the captcha challenge')
+                    user_join(user, self._config, self._msg_broker)
+                    return False
+                else:
+                    self.send_message(update, 'Wrong captcha')
+                    max_tries = self._captcha_manager\
+                        ._config["Captcha"]["MaxCaptchaTries"]
+                    logger.info(
+                        f'{user} has failed the captcha challenge'
+                        f' ({user.captcha_status.failed_attempts}/'
+                        f'{max_tries})')
+            except MaxCaptchaTriesError as e:
+                self.send_message(update, e.reason)
+            except CaptchaFloodError:
+                try:
+                    if self._last_attempt_dict[user.id]['sent_warning']:
+                        logger.info(f'{user} is flooding the captcha')
+                    else:
+                        self.send_message(
+                            update,
+                            'You can try once every '
+                            f'{self._captcha_manager.delay}'
+                        )
+                except KeyError:
+                    self.send_message(
+                        update,
+                        'You can try once every '
+                        f'{self._captcha_manager.delay}'
+                    )
+                finally:
+                    self._last_attempt_dict[user.id] = {
                         'sent_warning': True
                     }
                     return False
-            elif not user.captcha_status.current_value and \
-                    user.captcha_status.passed:
-                return True
-
-            captcha_img = self._captcha_manager.start_captcha_session(user)
-            logger.info(f'{user_log_str(update)} generated captcha '
+        captcha_img = self._captcha_manager.start_captcha_session(user)
+        if captcha_img:
+            logger.info(f'{user} generated captcha '
                         f'{user.captcha_status.current_value}')
-            update.message.reply_photo(
+            update.reply_photo(
                 captcha_img,
                 caption='Please complete the captcha challenge '
                 '(no spaces)'
             )
-
-            self._last_attempt_dict[tg_user.id] = {
+            self._last_attempt_dict[user.id] = {
                 'sent_warning': False
             }
-            return False
+        return False

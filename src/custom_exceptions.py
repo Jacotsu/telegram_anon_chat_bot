@@ -19,24 +19,28 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import logging
-from custom_dataclasses import User, Role
+
 
 logger = logging.getLogger(__name__)
 
 
-def is_hierarchy_respected(agent: User, target: User):
-    if target.role.power < agent.role.power:
-        return True
-    return False
+class UserResolverError(Exception):
+    pass
 
-def is_role_hierarchy_respected(agent: User, target_role: Role):
-    if agent.role.power > target_role.power:
-        if target_role.permissions in agent.permissions:
-            return True
-    return False
 
-def load_role_users_from_config_section(database_manager, config):
-    for role_name in config['Roles'].sections:
-        for user_id in config['Roles'][role_name]['UserIds']:
-            User(database_manager, int(user_id)).role = \
-                Role(database_manager, role_name)
+class MaxCaptchaTriesError(Exception):
+    def __init__(self, reason, is_ban=False, is_kick=False, end_date=None,
+                 *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.reason = reason
+        self.is_ban = is_ban
+        self.is_kick = is_kick
+        self.end_date = end_date
+
+
+class CaptchaFloodError(Exception):
+    pass
+
+
+class InvalidPermissionsError(Exception):
+    pass

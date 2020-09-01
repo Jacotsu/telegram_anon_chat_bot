@@ -19,32 +19,53 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import logging
+import asyncio
+import threading
+from os.path import exists
 from telegram import Update, Message
 from telethon.sync import TelegramClient
-from telethon.tl.functions.users import GetFullUserRequest
-from utils import SingletonDecorator
+from utils import SingletonDecorator, split_cmd_line
 import custom_dataclasses
+from custom_exceptions import UserResolverError
 
 logger = logging.getLogger(__name__)
 
-
-class UserResolverError(Exception):
-    pass
-
-
+# Mixing telethon and python telegram bot is not ideal since the former
+# uses asyncio and the latter threads. Asyncio should be more efficient but
+# the python telegram bot's filters are really handy. This hybrid form will do
+# for the moment
 @SingletonDecorator
 class UserResolver:
     def __init__(self, database_manager, config):
         self._db_man = database_manager
-        api_id = config["UsernameResolver"]["ApiId"]
-        api_hash = config["UsernameResolver"]["ApiHash"]
+        self._api_id = config["UsernameResolver"]["ApiId"]
+        self._api_hash = config["UsernameResolver"]["ApiHash"]
+        self._session_path = config["UsernameResolver"]["SessionPath"]
+        self._threads_data = {}
 
-        if api_id and api_hash:
-            self._tg_client = TelegramClient('anon chat bot user resolver',
-                                             api_id, api_hash)
-            logger.debug('Initialized user resolver with username support')
-        else:
-            self._tg_client = None
+    def _init_thread_event_loop(self):
+        '''
+        !!!MESS ALERT!!
+        Every thread needs its own telethon client because telethon is not
+        thread safe
+        '''
+        thread_id = threading.get_ident()
+        if thread_id not in self._threads_data:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            if self._api_id and self._api_hash and exists(self._session_path):
+                client = TelegramClient(
+                    self._session_path, self._api_id, self._api_hash, timeout=2
+                )
+                logger.debug('Initialized user resolver with username support')
+            else:
+                client = None
+                logger.info('User resolver is disabled')
+
+            self._threads_data[thread_id] = {
+                'loop': loop,
+                'client': client
+            }
 
     def acquire_target_user_from_cmd(
             self,
@@ -57,11 +78,12 @@ class UserResolver:
         '''
         replied_msg = update.message.reply_to_message
         # Remove the issued command from the command line and then split it
-        split_cmd = " ".join(update.message.text.split()[1:]).split(',')
+        split_cmd = split_cmd_line(update.message.text)
         split_cmd_len = len(split_cmd)
 
         if replied_msg:
-            return custom_dataclasses.User(self._db_man, replied_msg.from_user)
+            user = self._db_man.get_message_sender(replied_msg)
+            return self.resolve(user.id)
         else:
             if split_cmd_len > target_position:
                 return self.resolve(split_cmd[target_position].strip())
@@ -71,22 +93,24 @@ class UserResolver:
                                  f'(target_position={target_position})')
 
     def resolve(self, value_or_update) -> custom_dataclasses.User:
-        if type(value_or_update) == int:
-            return custom_dataclasses.User(
-                self._db_man, value_or_update, resolver=self)
-        elif type(value_or_update) == str:
-            if self._tg_client:
-                with self._tg_client as tg_client:
-                    peer_id = tg_client.get_peer_id(value_or_update)
-                    if peer_id:
-                        return custom_dataclasses.User(
-                            self._db_man, peer_id, resolver=self)
-                    else:
-                        raise ValueError(f'{value_or_update} is an '
-                                         'invalid username')
-            else:
-                raise UserResolverError('Username resolution is not '
-                                        'configured')
+        if type(value_or_update) == str or type(value_or_update) == int:
+            try:
+                return custom_dataclasses.User(
+                    self._db_man, int(value_or_update), resolver=self)
+            except ValueError:
+                self._init_thread_event_loop()
+                thread_id = threading.get_ident()
+                if self._threads_data[thread_id]['client']:
+                    with self._threads_data[thread_id]['client'] as tg_client:
+                        try:
+                            peer_id = tg_client.get_peer_id(value_or_update)
+                            return custom_dataclasses.User(
+                                self._db_man, peer_id, resolver=self)
+                        except ValueError:
+                            raise UserResolverError('Invalid username/user_id')
+                else:
+                    raise UserResolverError('Username resolution is not '
+                                            'configured')
         elif type(value_or_update) == Update:
             return custom_dataclasses.User(
                 self._db_man, value_or_update.message.from_user)
@@ -97,15 +121,20 @@ class UserResolver:
             raise ValueError(f'{value_or_update}\'s type is wrong')
 
     def get_user_info(self, username_or_id):
-        if self._tg_client:
-            with self._tg_client as tg_client:
-                info = tg_client(GetFullUserRequest(username_or_id))
+
+        thread_id = threading.get_ident()
+        self._init_thread_event_loop()
+        if self._threads_data[thread_id]['client']:
+            with self._threads_data[thread_id]['client'] as tg_client:
+                try:
+                    telethon_user = tg_client.get_entity(username_or_id)
+                except ValueError:
+                    raise UserResolverError('Invalid username/user_id')
                 return {
-                    'first_name': info.user.first_name,
-                    'last_name': info.user.last_name,
-                    'username': info.user.username,
-                    'id': info.user.id
+                    'first_name': telethon_user.first_name,
+                    'last_name': telethon_user.last_name,
+                    'username': telethon_user.username,
+                    'id': telethon_user.id
                 }
         else:
-            raise UserResolverError('Username resolution is not '
-                                    'configured')
+            raise UserResolverError('Username resolution is not configured')

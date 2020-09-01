@@ -20,9 +20,10 @@
 
 import sqlite3
 import threading
-from datetime import datetime, timezone, timedelta
 import logging
+from datetime import datetime, timezone, timedelta
 from typing import Iterable
+from telegram import Message
 import queries
 import custom_dataclasses
 from permissions import Permissions
@@ -62,7 +63,9 @@ class DatabaseManager:
                     queries.CREATE_ACTIVE_CAPTCHA_TABLE,
                     queries.CREATE_BAN_LOG_TABLE,
                     queries.CREATE_CHAT_DELAYS_TABLE,
-                    queries.CREATE_MESSAGES_TABLE
+                    queries.CREATE_MESSAGES_TABLE,
+                    queries.CREATE_DATABASE_INFO_TABLE,
+                    queries.SET_DATABASE_VERSION
                 ]
 
                 # DO NOT change the order
@@ -84,6 +87,7 @@ class DatabaseManager:
                     conn.execute(query)
 
                 for query in triggers:
+                    logger.debug(f"Executing query {query}")
                     conn.executescript(query)
 
             return self._conn[threading.get_ident()]
@@ -130,8 +134,7 @@ class DatabaseManager:
         '''
         logger.debug('Getting active users')
         cursor = self._execute_simple_get_query(queries.GET_ACTIVE_USERS)
-        return map(lambda x: custom_dataclasses.User(self,
-                                                     user_id=x['user_id']),
+        return map(lambda x: custom_dataclasses.User(self, x['user_id']),
                    cursor)
 
     def get_user(self, user_id):
@@ -197,7 +200,7 @@ class DatabaseManager:
             queries.INSERT_JOIN_ENTRY,
             {'user_id': user_id,
              'unix_join_date': int(date_time.replace(tzinfo=timezone.utc)
-                                   .timestamp()*1E6)}
+                                   .timestamp())}
         )
 
     def log_quit(self, user_id,
@@ -208,7 +211,7 @@ class DatabaseManager:
             queries.INSERT_QUIT_ENTRY,
             {'user_id': user_id,
              'unix_quit_date': int(date_time.replace(tzinfo=timezone.utc)
-                                   .timestamp()*1E6)}
+                                   .timestamp())}
         )
 
     def get_join_quit_log(self, user_id):
@@ -216,18 +219,29 @@ class DatabaseManager:
             cursor = conn.execute(queries.GET_USER_JOIN_QUIT_LOG,
                                   {'user_id': user_id})
 
-            return map (lambda x: custom_dataclasses.
-                        DateIntervalLog(x['join_date']/1E6,
-                                        x['quit_date'])/1E6, cursor)
+            return map (
+                lambda x: custom_dataclasses.
+                DateInterval(
+                    datetime.utcfromtimestamp(x['unix_join_date'])
+                    if x['unix_join_date'] else None,
+                    datetime.utcfromtimestamp(x['unix_quit_date'])
+                    if x['unix_quit_date'] else None),
+                cursor)
 
     def get_ban_log(self, user_id: int) -> Iterable:
         with self._get_connection() as conn:
             cursor = conn.execute(queries.GET_USER_BAN_LOG,
                                   {'user_id': user_id})
 
-            return map(lambda x: custom_dataclasses.
-                       DateIntervalLog(x['start_date']/1E6,
-                                       x['end_date'])/1E6, cursor)
+            return map(
+                lambda x: custom_dataclasses.BanLogEntry(
+                    custom_dataclasses.DateInterval(
+                        datetime.utcfromtimestamp(x['unix_start_date'])
+                        if x['unix_start_date'] else None,
+                        datetime.utcfromtimestamp(x['unix_end_date'])
+                        if x['unix_end_date'] else None
+                    ),
+                    x['reason']), cursor)
 
 # ------------------------------ [MODERATION] ---------------------------------
 
@@ -237,9 +251,11 @@ class DatabaseManager:
 
     def ban(self,
             user_id: int,
-            start_date: datetime = datetime.utcnow(),
+            start_date: datetime = None,
             end_date: datetime = datetime.max,
             reason: str = ''):
+        if not start_date:
+            start_date = datetime.utcnow()
         if start_date > end_date:
             raise ValueError('End date must be greater than start date')
 
@@ -247,9 +263,9 @@ class DatabaseManager:
             queries.BAN_USER,
             {'user_id': user_id,
              'unix_start_date': int(start_date.replace(tzinfo=timezone.utc)
-                                    .timestamp()*1E6),
-             'unix_end_date': int(start_date.replace(tzinfo=timezone.utc)
-                                  .timestamp()*1E6),
+                                    .timestamp()),
+             'unix_end_date': int(end_date.replace(tzinfo=timezone.utc)
+                                  .timestamp()),
              'reason': reason
              }
         )
@@ -258,7 +274,7 @@ class DatabaseManager:
         self._execute_simple_set_query(
             queries.UNBAN_USER,
             {'user_id': user_id,
-             'reason': f'Unbanned by {user_id} for: {reason}'
+             'reason': reason
              }
         )
 
@@ -272,6 +288,8 @@ class DatabaseManager:
             return False
         if row['banned']:
             return True
+        else:
+            return False
 
 # -------------------------- [CAPTCHA MANAGEMENT] -----------------------------
 
@@ -323,7 +341,7 @@ class DatabaseManager:
             {'user_id': user_id},
             f'User id: {user_id} is not present in the captchas table'
         )
-        return datetime.utcfromtimestamp(row["unix_creation_time_date"]/1E6)
+        return datetime.utcfromtimestamp(row["unix_creation_time_date"])
 
     def get_user_current_captcha_last_try_time_date(
             self,
@@ -335,7 +353,7 @@ class DatabaseManager:
             f'User id: {user_id} is not present in the captchas table'
         )
 
-        return datetime.utcfromtimestamp(row["unix_last_try_time_date"]/1E6)
+        return datetime.utcfromtimestamp(row["unix_last_try_time_date"])
 
     def set_user_failed_attempts_from_captcha_status(self,
                                                      user_id: int,
@@ -387,7 +405,7 @@ class DatabaseManager:
             {'user_id': user_id,
              'unix_creation_time_date': int(creation_time_date
                                             .replace(tzinfo=timezone.utc)
-                                            .timestamp()*1E6)
+                                            .timestamp())
              }
         )
 
@@ -403,11 +421,12 @@ class DatabaseManager:
             {'user_id': user_id,
              'unix_last_try_time_date': int(last_try_time_date
                                             .replace(tzinfo=timezone.utc)
-                                            .timestamp()*1E6)
+                                            .timestamp())
              }
         )
 
 # ------------------------------ [PERMISSIONS] --------------------------------
+
     def update_user_permissions(self,
                                 user_id: int,
                                 permissions: Permissions = Permissions.NONE):
@@ -431,7 +450,7 @@ class DatabaseManager:
 
     def create_role(self,
                     role_name,
-                    power: int,
+                    power: int = 0,
                     permissions: Permissions = Permissions.NONE
                     ):
         self._execute_simple_set_query(
@@ -461,9 +480,9 @@ class DatabaseManager:
                  'role_name': role_name},
             )
 
-    def get_user_role(self, user_id: int, role_name: str):
+    def get_user_role(self, user_id: int):
         try:
-            row = self._get_single_row_from_cursor(
+            row = self._execute_get_query_for_1_row(
                     queries.GET_USER_ROLE,
                     {'user_id': user_id}
                 )
@@ -567,7 +586,7 @@ class DatabaseManager:
         self._execute_simple_set_query(
                 queries.PURGE_MESSAGES,
                 {'unix_utc_timedate': int(utc_date.replace(tzinfo=timezone.utc)
-                                          .timestamp()*1E6)}
+                                          .timestamp())}
         )
 
     def get_messages_to_purge(self, sent_date: datetime):
@@ -575,22 +594,53 @@ class DatabaseManager:
                 queries.GET_MESSAGES_TO_PURGE,
                 {'unix_utc_timedate': int(sent_date
                                           .replace(tzinfo=timezone.utc)
-                                          .timestamp()*1E6)}
+                                          .timestamp())}
         )
         return cursor
 
-    def register_message(self, sender_id: int, receiver_id: int,
-                         message_id: int, receiver_message_id: int,
-                         sent_date: datetime):
-        self._execute_simple_set_query(
-                queries.REGISTER_MESSAGE,
-                {'sender_id': sender_id,
-                'receiver_id': receiver_id,
-                'unix_sent_date': int(sent_date.replace(tzinfo=timezone.utc)
-                                      .timestamp()*1E6),
-                'sender_message_id': message_id,
-                'receiver_message_id': receiver_message_id}
+
+    def get_messages_to_delete(self, chat_id: int, message_id: int):
+        cursor = self._execute_simple_get_query(
+                queries.GET_MESSAGES_TO_DELETE,
+                {'receiver_chat_id': int(chat_id),
+                 'receiver_message_id': int(message_id)}
         )
+        return cursor
+
+
+    def get_message_sender(
+        self,
+        message: Message) -> 'custom_dataclasses.User':
+        if message.forward_from:
+            return custom_dataclasses.User(self, message.forward_from)
+        else:
+            row = self._execute_get_query_for_1_row(
+                queries.GET_MESSAGE_SENDER,
+                {'receiver_id': int(message.chat.id),
+                 'receiver_message_id': int(message.message_id)}
+            )
+            return custom_dataclasses.User(self, row['sender_id'])
+
+
+    def register_messages(self, messages_iterable: Iterable[dict]):
+        with self._get_connection() as conn:
+            logger.debug(f"Executing many queries {queries.REGISTER_MESSAGE}")
+            conn.executemany(
+                queries.REGISTER_MESSAGE,
+                map(
+                    lambda x: {
+                        'sender_id': x['sender_id'],
+                        'receiver_id': x['receiver_id'],
+                        'sender_message_id': x['sender_message_id'],
+                        'receiver_message_id': x['receiver_message_id'],
+                        'unix_sent_date':
+                        int(x['unix_sent_date']
+                            .replace(tzinfo=timezone.utc).timestamp())
+                    },
+                    messages_iterable
+                )
+            )
+            logger.debug(f"Query executed")
 
 # --------------------------- [ADMINISTRATIVE POLLS] --------------------------
 

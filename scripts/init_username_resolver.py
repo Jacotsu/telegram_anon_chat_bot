@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: UTF-8 -*-
-#
 # anon_chat_bot is a telegram bot whose main function is to manage an
 # anonymous chat lounge
 # Copyright (C) <2020>  <jacotsu>
@@ -18,25 +16,13 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-import logging
-from custom_dataclasses import User, Role
 
-logger = logging.getLogger(__name__)
+from telethon.sync import TelegramClient
 
+api_id = input('Insert your api id: ')
+api_hash = input('Insert your api hash: ')
 
-def is_hierarchy_respected(agent: User, target: User):
-    if target.role.power < agent.role.power:
-        return True
-    return False
-
-def is_role_hierarchy_respected(agent: User, target_role: Role):
-    if agent.role.power > target_role.power:
-        if target_role.permissions in agent.permissions:
-            return True
-    return False
-
-def load_role_users_from_config_section(database_manager, config):
-    for role_name in config['Roles'].sections:
-        for user_id in config['Roles'][role_name]['UserIds']:
-            User(database_manager, int(user_id)).role = \
-                Role(database_manager, role_name)
+tg_client = TelegramClient('tg_session.session', api_id, api_hash)
+with tg_client as tg_session:
+    me = tg_session.get_me()
+    tg_session.send_message(me, 'username resolver configured')

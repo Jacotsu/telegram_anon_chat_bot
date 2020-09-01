@@ -30,7 +30,6 @@ from telegram import Message, Update
 from custom_logging import user_log_str
 import permissions
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -105,12 +104,14 @@ def chunk_string(string: str, chunk_size: int):
 
 def get_permissions_from_config_section(config_section):
     perms = permissions.Permissions.NONE
-    for perm in config_section.split():
+    perm_list = [x.strip(' \t\n\r')
+                 .replace(' ', '_') for x in config_section]
+    for perm in perm_list:
         try:
             perms |= permissions.Permissions[perm.strip()]
         except KeyError:
             logger.error('Invalid default permission in users '
-                         f'permissions {perm}')
+                         f'permissions: {perm}')
             sys.exit(1)
     return perms
 
@@ -158,3 +159,27 @@ class SingletonDecorator:
         if not self.instance:
             self.instance = self.klass(*args, **kwds)
         return self.instance
+
+def split_cmd_line(cmd_line):
+    return " ".join(cmd_line.split()[1:]).split(',')
+
+
+def escape_markdown_chars(string):
+    replacement_map = {
+        '.': '\.',
+        '-': '\-',
+        '>': '\>',
+        '*': '\*',
+        '_': '\_',
+        '(': '\(',
+        ')': '\)',
+        '=': '\=',
+        '{': '\{',
+        '}': '\}'
+    }
+
+    for char, replacement in replacement_map.items():
+        if char in string:
+            string = string.replace(char, replacement)
+
+    return string

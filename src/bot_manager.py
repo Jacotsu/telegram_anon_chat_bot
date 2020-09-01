@@ -24,6 +24,8 @@ from message_broker import MessageBroker
 from command_executor import CommandExecutor
 from captcha_manager import CaptchaManager
 from database import DatabaseManager
+from custom_dataclasses import Role
+from security import load_role_users_from_config_section
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,11 @@ class BotManager:
     def __init__(self, config):
         self._config = config
         self._db_man = DatabaseManager(config["Bot"]["DatabasePath"])
-        self._updater = Updater(config["Bot"]["Token"], use_context=True)
+        if logger.getEffectiveLevel == logging.DEBUG:
+            self._updater = Updater(config["Bot"]["Token"],
+                                    workers=1, use_context=True)
+        else:
+            self._updater = Updater(config["Bot"]["Token"], use_context=True)
         self._captcha_manager = CaptchaManager(config, self._db_man)
         self._msg_broker = MessageBroker(self._updater,
                                          self._db_man,
@@ -44,6 +50,9 @@ class BotManager:
             self._db_man,
             self._msg_broker,
             self._captcha_manager)
+
+        Role.init_roles_from_config(self._db_man, config)
+        load_role_users_from_config_section(self._db_man, config)
 
     def start(self):
         '''

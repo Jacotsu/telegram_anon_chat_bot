@@ -23,10 +23,6 @@ from enum import IntFlag, auto, unique
 import utils
 
 
-class InvalidPermissionsError(Exception):
-    pass
-
-
 @utils.with_limits
 @unique
 class Permissions(IntFlag,
@@ -88,10 +84,13 @@ class Permissions(IntFlag,
     SEND_VIDEO = auto()
     SEND_VIDEO_NOTE = auto()
     SEND_AUDIO = auto()
+    SEND_VOICE = auto()
     SEND_STICKER = auto()
 
     # Non anon polls are not accepted
     SEND_ANON_POLL = auto()
+
+    FORWARD = auto()
 
     # -------------------------------- [COMMANDS] -----------------------------
 

@@ -26,44 +26,84 @@ from pytimeparse.timeparse import timeparse
 from captcha.image import ImageCaptcha
 from custom_dataclasses import User
 from database import DatabaseManager
+from custom_exceptions import MaxCaptchaTriesError, CaptchaFloodError
 
 
 logger = logging.getLogger(__name__)
 
 
-class MaxCaptchaTriesError(Exception):
-    def __init__(self, reason, is_ban=False, is_kick=False, end_date=None,
-                 *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.reason = reason
-        self.is_ban = is_ban
-        self.is_kick = is_kick
-        self.end_date = end_date
+def ban_user_and_raise_max_tries(user: User, duration):
+    now = datetime.utcnow()
+    user.ban(end_date=now + duration, reason='Too many captcha failures')
+    logger.info(
+        f'{user} has been banned until {now + duration} for failing captcha '
+        'auth too may times')
+    raise MaxCaptchaTriesError(
+        f'You have been banned until {now+duration}'
+        ' for failing the captcha'
+        'authentication too many times',
+        is_ban=True,
+        end_date=now + duration
+    )
 
 
-class CaptchaFloodError(Exception):
-    pass
+def kick_user_and_raise_max_tries(user: User):
+    user.kick()
+    logger.info(f'{user} has been kicked for failing captcha auth too may '
+                'times')
+    raise MaxCaptchaTriesError(
+        'You have been kicked for failing the captcha authentication too '
+        'many times',
+        is_kick=True
+    )
 
 
 class CaptchaManager:
     def __init__(self, config, database_manager: DatabaseManager):
+        action_map = {
+            'kick': lambda x, y: kick_user_and_raise_max_tries(x),
+            'ban': ban_user_and_raise_max_tries,
+            'none': lambda x, y: None
+        }
+
         self._config = config
         self._db_man = database_manager
+        self.delay = timedelta(
+            seconds=timeparse(
+                self._config["Captcha"]["TimeDelayBetweenAttempts"]
+            )
+        )
+
+        self.action_for_failure = action_map[
+            self._config["Captcha"]["ActionOnFailedCaptcha"].lower()
+        ]
+
+        self.ban_delay = timedelta(
+            seconds=timeparse(
+                self._config["Captcha"]["FailedCaptchaBanDuration"]
+            )
+        )
+
+        self.captcha_expiration_delay = timedelta(
+            seconds=timeparse(self._config["Captcha"]["ExpirationTime"])
+        )
+
+        self.max_tries = int(self._config["Captcha"]["MaxCaptchaTries"])
+
         self._last_attempt_dict = {}
 
     def start_captcha_session(self, user: User):
         captcha_status = user.captcha_status
         creation_time = captcha_status.creation_time
         now = datetime.utcnow()
-        time_delta = timedelta(seconds=timeparse(self._config["Captcha"]
-                                                 ["ExpirationTime"]))
 
         if user.captcha_status.failed_attempts % \
            int(self._config["Captcha"]["FailuresToGenerateNewCaptcha"]) == 0 \
-           or now - creation_time > time_delta:
+           or now - creation_time > self.captcha_expiration_delay:
             self._generate_captcha_value(user)
 
-        return self.get_captcha_image(user)
+            return self.get_captcha_image(user)
+        return None
 
     def submit_captcha(self, user: User, value: str):
         captcha_status = user.captcha_status
@@ -72,13 +112,7 @@ class CaptchaManager:
         logger.debug(f'{user} submitted {value} actual value is '
                      f'{user.captcha_status.current_value}')
 
-        action_for_failure = self._config["Captcha"]["ActionOnFailedCaptcha"]
-        ban_time_delta = self._config["Captcha"]["FailedCaptchaBanDuration"]
-
-        time_delta = timedelta(seconds=timeparse(self._config["Captcha"]
-                                                 ["TimeDelayBetweenAttempts"]))
-
-        if now - last_attempt > time_delta:
+        if now - last_attempt > self.delay:
             captcha_status.last_try_time = now
             if captcha_status.current_value == value.upper():
                 captcha_status.failed_attempts = 0
@@ -87,29 +121,10 @@ class CaptchaManager:
             else:
                 captcha_status.total_failed_attempts += 1
                 captcha_status.failed_attempts += 1
-                if captcha_status.failed_attempts > int(self._config["Captcha"]
-                   ["MaxCaptchaTries"]):
+                if captcha_status.failed_attempts > self.max_tries:
                     captcha_status.failed_attempts = 0
                     captcha_status.current_value = ''
-
-                    if action_for_failure.lower() == 'ban':
-                        user.ban(end_date=now + ban_time_delta,
-                                 reason='Too many captcha failures')
-                        raise MaxCaptchaTriesError(
-                            f'You have been banned until {now+time_delta}'
-                            ' for failing the captcha'
-                            'authentication too many times',
-                            is_ban=True,
-                            end_date=now + ban_time_delta
-                        )
-                        raise MaxCaptchaTriesError(now + time_delta)
-                    elif action_for_failure.lower() == 'kick':
-                        user.kick()
-                        raise MaxCaptchaTriesError(
-                            'You have been kicked for failing the captcha'
-                            'authentication too many times',
-                            is_kick=True
-                        )
+                    self.action_for_failure(user, now + self.ban_delay)
         else:
             raise CaptchaFloodError()
 

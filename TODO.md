@@ -11,6 +11,10 @@
   - [ ] Implement Database indexes
   - [ ] Implement garbage collection in antiflood filter and captcha filter
 
+- Administration
+  - [ ] Implement message id log to allow message deletion
+  - [ ] Fix /view_user_info bug that doesn't allow the last join time to be shown (BUG in sql query)
+
 - Security
   - [ ] Implement Database and log encryption
   - [ ] Set default role and permissions on join

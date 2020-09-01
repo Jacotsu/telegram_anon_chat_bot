@@ -131,6 +131,13 @@ CREATE_ADMINISTRATIVE_POLLS_TABLE = '''
     ) WITHOUT ROWID;
 '''
 
+CREATE_DATABASE_INFO_TABLE = '''
+    CREATE TABLE IF NOT EXISTS database_info (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    ) WITHOUT ROWID;
+'''
+
 # ----------------------------[VIEWS CREATION]---------------------------------
 
 CREATE_BANNED_USERS_VIEW = '''
@@ -142,8 +149,8 @@ CREATE_BANNED_USERS_VIEW = '''
         FROM
             ban_log
         WHERE
-        strftime("%s", 'now')*1000000 >= IFNULL(unix_start_date, 0)
-        AND strftime("%s", 'now')*1000000 <=
+        strftime("%s", 'now')*1E6 >= IFNULL(unix_start_date, 0)
+        AND strftime("%s", 'now')*1E6 <=
         IFNULL(unix_end_date, 9223372036854775807);
 '''
 
@@ -160,10 +167,10 @@ CREATE_ACTIVE_USERS_VIEW = '''
         users
     INNER JOIN join_log USING (user_id)
     LEFT JOIN quit_log USING (user_id)
-    GROUP BY user_id
+    GROUP BY users.user_id
     HAVING IFNULL(MAX(unix_join_date), 0) > IFNULL(MAX(unix_quit_date), 0)
-    AND user_id NOT IN (SELECT user_id FROM banned_users)
-    AND (SELECT passed FROM captcha_status WHERE user_id = user_id);
+    AND users.user_id NOT IN (SELECT user_id FROM banned_users)
+    AND (SELECT passed FROM captcha_status WHERE user_id = users.user_id);
 '''
 
 # ------------------------------ [TRIGGERS] -----------------------------------
@@ -176,7 +183,20 @@ USER_ROLE_CHANGED = '''
     BEGIN
         REPLACE INTO permissions(user_id, permissions)
         VALUES (
-            OLD.user_id
+            OLD.user_id,
+            (SELECT role_permissions
+             FROM roles
+             WHERE role_name = NEW.role_name)
+        );
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS user_role_insert_trigger
+        BEFORE INSERT
+        ON assigned_roles
+    BEGIN
+        REPLACE INTO permissions(user_id, permissions)
+        VALUES (
+            NEW.user_id,
             (SELECT role_permissions
              FROM roles
              WHERE role_name = NEW.role_name)
@@ -188,7 +208,7 @@ USER_ROLE_CHANGED = '''
 # the lowest power
 USER_BANNED = '''
     CREATE TRIGGER IF NOT EXISTS user_ban_trigger
-        BEFORE UPDATE
+        BEFORE INSERT
         ON ban_log
     BEGIN
         REPLACE INTO permissions(user_id, permissions)
@@ -197,7 +217,7 @@ USER_BANNED = '''
             (SELECT role_permissions
              FROM roles
              WHERE role_name = NEW.role_name
-             ORDER BY power ASC
+             ORDER BY role_power ASC
              LIMIT 1
              )
         );
@@ -212,16 +232,9 @@ CREATE_USER = '''
 '''
 
 DOES_USER_EXIST = '''
-    SELECT
-        CASE WHEN (
-            SELECT user_id
-            FROM users
-            WHERE user_id = :user_id)
-        THEN
-            1
-        ELSE
-            0
-        END;
+    SELECT 1
+    FROM users
+    WHERE user_id = :user_id;
 '''
 
 GET_ACTIVE_USERS = '''
@@ -235,29 +248,45 @@ GET_USER = '''
     WHERE user_id = :user_id;
 '''
 
-
 BAN_USER = '''
     INSERT INTO ban_log (user_id, unix_start_date, unix_end_date, reason)
-    VALUES (:user_id, :unix_start_date, :unix_end_date, :reason);
+    VALUES (:user_id, :unix_start_date*1E6, :unix_end_date*1E6, :reason);
+'''
+
+UNBAN_USER = '''
+    WITH new (user_id, unix_end_date, reason) AS (
+    VALUES(:user_id, strftime("%s", 'now'), :reason))
+    UPDATE ban_log 
+    SET
+        unix_end_date = strftime("%s", 'now')*1E6,
+        reason = old.reason || " " || new.reason || "\n"
+    WHERE user_id = :user_id
+        AND unix_start_date <= strftime("%s", 'now')*1E6
+        AND strftime("%s", 'now')*1E6 <= old.unix_end_date;
+
+
+    SELECT new.user_id, old.unix_start_date, new.unix_end_date*1E6,
+        
+    FROM new
+    LEFT JOIN ban_log AS old USING (user_id)
+    WHERE 
+    UPDATE ban_log
+    SET
+        unix_end_date = strftime("%s", 'now')*1E6,
+        reason = 
+
 '''
 
 IS_USER_BANNED = '''
-SELECT 1 as banned
-FROM banned_users
-WHERE user_id = :user_id;
+    SELECT 1 as banned
+    FROM banned_users
+    WHERE user_id = :user_id;
 '''
 
 IS_USER_ACTIVE = '''
-    SELECT
-        CASE WHEN (
-            SELECT 1
-            FROM active_users
-            WHERE user_id = :user_id)
-        THEN
-            1
-        ELSE
-            0
-        END;
+    SELECT 1
+    FROM active_users
+    WHERE user_id = :user_id;
 '''
 
 # ------------------------ [PERMISSIONS] ---------------------
@@ -337,7 +366,7 @@ SET_USER_CURRENT_CAPTCHA_VALUE = '''
 
 SET_USER_CURRENT_CAPTCHA_CREATION_TIME_DATE = '''
     WITH new (user_id, unix_creation_time_date) AS (VALUES(:user_id,
-        :unix_creation_time_date))
+        :unix_creation_time_date*1E6))
     REPLACE INTO active_captcha_storage (user_id, current_value,
         unix_creation_time_date, unix_last_try_time_date)
     SELECT new.user_id, old.current_value, new.unix_creation_time_date,
@@ -349,7 +378,7 @@ SET_USER_CURRENT_CAPTCHA_CREATION_TIME_DATE = '''
 SET_USER_CURRENT_CAPTCHA_LAST_TRY_TIME_DATE = '''
 
     WITH new (user_id, unix_last_try_time_date) AS (VALUES(:user_id,
-        :unix_last_try_time_date))
+        :unix_last_try_time_date*1E6))
     REPLACE INTO active_captcha_storage (user_id, current_value,
         unix_creation_time_date, unix_last_try_time_date)
     SELECT new.user_id, old.current_value, old.unix_creation_time_date,
@@ -358,47 +387,52 @@ SET_USER_CURRENT_CAPTCHA_LAST_TRY_TIME_DATE = '''
     LEFT JOIN active_captcha_storage AS old USING (user_id);
 '''
 GET_USER_CURRENT_CAPTCHA_VALUE = '''
-    SELECT (current_value)
+    SELECT current_value
     FROM active_captcha_storage
     WHERE user_id = :user_id;
 '''
 GET_USER_CURRENT_CAPTCHA_CREATION_TIME_DATE = '''
-    SELECT (unix_creation_time_date)
+    SELECT unix_creation_time_date/1E6 as unix_creation_time_date
     FROM active_captcha_storage
     WHERE user_id = :user_id;
 '''
 GET_USER_CURRENT_CAPTCHA_LAST_TRY_TIME_DATE = '''
-    SELECT (unix_last_try_time_date)
+    SELECT unix_last_try_time_date/1E6 as unix_last_try_time_date
     FROM active_captcha_storage
     WHERE user_id = :user_id;
 '''
 
 # -------------------- [LOGGING] ------------------
 GET_USER_BAN_LOG = '''
-    SELECT unix_start_date, unix_end_date
-    FROM users
-    INNER JOIN ban_log USING(user_id)
-    ORDER BY start_date DESC
-    WHERE user_id = :user_id;
+    SELECT unix_start_date/1E6 as unix_start_date,
+        unix_end_date/1E6 as unix_end_date, reason
+    FROM ban_log
+    WHERE user_id = :user_id
+    ORDER BY unix_start_date ASC;
 '''
 
 GET_USER_JOIN_QUIT_LOG = '''
-    SELECT unix_join_date, unix_quit_date
-    FROM users
-    INNER JOIN join_log USING(user_id)
-    INNER JOIN quit_log USING(user_id)
-    ORDER BY unix_join_date DESC
-    WHERE user_id = :user_id;
+    SELECT unix_join_date/1E6 as unix_join_date,
+        unix_quit_date/1E6 as unix_quit_date
+    FROM join_log
+    LEFT JOIN (
+        SELECT user_id, unix_quit_date
+        FROM quit_log
+        )
+    USING(user_id)
+    WHERE user_id = :user_id AND (unix_join_date < unix_quit_date)
+    GROUP BY unix_join_date
+    ORDER BY unix_join_date, unix_quit_date ASC;
 '''
 
 INSERT_QUIT_ENTRY = '''
     INSERT INTO quit_log (user_id, unix_quit_date)
-    VALUES (:user_id, :unix_quit_date);
+    VALUES (:user_id, :unix_quit_date*1E6);
 '''
 
 INSERT_JOIN_ENTRY = '''
     INSERT INTO join_log (user_id, unix_join_date)
-    VALUES (:user_id, :unix_join_date);
+    VALUES (:user_id, :unix_join_date*1E6);
 '''
 
 # ------------------------ [ROLES MANAGEMENT] ---------------------------------
@@ -415,7 +449,8 @@ CREATE_UPDATE_ROLE = '''
 
 GET_ROLES = '''
     SELECT role_name
-    FROM roles;
+    FROM roles
+    ORDER BY role_power ASC;
 '''
 
 DELETE_ROLE = '''
@@ -459,7 +494,7 @@ GET_ROLE_POWER = '''
 
 SET_ROLE_PERMISSIONS = '''
     WITH new (role_name, role_permissions) AS (VALUES(:role_name,
-        :permissions))
+        :role_permissions))
     REPLACE INTO roles (role_name, role_power, role_permissions)
     SELECT new.role_name, old.role_power, new.role_permissions
     FROM new
@@ -502,19 +537,37 @@ RESET_USER_CHAT_DELAY = '''
 REGISTER_MESSAGE = '''
     INSERT INTO message_log(sender_id, receiver_id, unix_sent_date,
         sender_message_id, receiver_message_id)
-    VALUES (:sender_id, :receiver_id, :unix_sent_date, :sender_message_id,
+    VALUES (:sender_id, :receiver_id, :unix_sent_date*1E6, :sender_message_id,
     :receiver_message_id);
 '''
 
 GET_MESSAGES_TO_PURGE = '''
     SELECT receiver_id, receiver_message_id
     FROM message_log
-    WHERE unix_sent_date < :unix_utc_timedate;
+    WHERE unix_sent_date < :unix_utc_timedate*1E6;
+'''
+
+GET_MESSAGES_TO_DELETE = '''
+    SELECT receiver_id, receiver_message_id
+    FROM message_log
+    INNER JOIN (
+        SELECT sender_id, sender_message_id
+        FROM message_log
+        WHERE receiver_id = :receiver_id
+        AND receiver_message_id = :receiver_message_id
+    ) USING (sender_id, sender_message_id);
+'''
+
+GET_MESSAGE_SENDER = '''
+    SELECT sender_id, sender_message_id
+    FROM message_log
+    WHERE receiver_id = :receiver_id
+    AND receiver_message_id = :receiver_message_id;
 '''
 
 PURGE_MESSAGES = '''
     DELETE FROM message_log
-    WHERE unix_sent_date < :unix_utc_timedate;
+    WHERE unix_sent_date < :unix_utc_timedate*1E6;
 '''
 
 # ------------------------- [ADMINISTRATIVE POLLS] ----------------------------
@@ -533,4 +586,10 @@ GET_ADMIN_POLL = '''
     SELECT poll_type, creator_user_id, extra_data
     FROM admin_polls
     WHERE poll_id = :poll_id;
+'''
+
+# --------------------------- [DATABASE INFO] ---------------------------------
+
+SET_DATABASE_VERSION = '''
+    REPLACE INTO database_info(key, value) VALUES("version", "0.0.1")
 '''

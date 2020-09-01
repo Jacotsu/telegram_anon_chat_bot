@@ -78,7 +78,7 @@ def load_config():
             if config.keys():
                 return config
         except ConfigObjError:
-            logger.error("{path}: Config file is malformed")
+            logger.error(f"{path}: Config file is malformed")
             sys.exit(1)
 
     if not config.keys():

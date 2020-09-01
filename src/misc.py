@@ -19,24 +19,31 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import logging
-from custom_dataclasses import User, Role
+from custom_dataclasses import Role
+
 
 logger = logging.getLogger(__name__)
 
 
-def is_hierarchy_respected(agent: User, target: User):
-    if target.role.power < agent.role.power:
-        return True
-    return False
+def user_join(user, config, msg_broker):
+    try:
+        next(user.join_quit_log)
+        logger.info(
+            f'{user} rejoined the chat'
+        )
+        msg_broker.send_or_forward_msg(
+            user,
+            config['Banners']['Rejoin']
+        )
+    except StopIteration:
+        logger.info(
+            f'{user} joined the chat'
+        )
+        msg_broker.send_or_forward_msg(
+            user,
+            config['Banners']['Join']
+        )
+        default_role_name = config['Roles']['DefaultRole']
+        user.role = Role(user._db_man, default_role_name)
 
-def is_role_hierarchy_respected(agent: User, target_role: Role):
-    if agent.role.power > target_role.power:
-        if target_role.permissions in agent.permissions:
-            return True
-    return False
-
-def load_role_users_from_config_section(database_manager, config):
-    for role_name in config['Roles'].sections:
-        for user_id in config['Roles'][role_name]['UserIds']:
-            User(database_manager, int(user_id)).role = \
-                Role(database_manager, role_name)
+    user.join()

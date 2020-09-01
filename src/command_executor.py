@@ -21,19 +21,24 @@
 
 import logging
 import sys
+import dateparser
 from telegram.ext import CommandHandler
 from telegram.constants import MAX_MESSAGE_LENGTH
 from utils import log_action, chunk_string, \
-    get_permissions_from_config_section, create_and_register_poll
-from security import execute_if_hierarchy_is_respected
+    get_permissions_from_config_section, create_and_register_poll,\
+    split_cmd_line, escape_markdown_chars
+from security import is_hierarchy_respected,\
+    is_role_hierarchy_respected
 from custom_logging import user_log_str
 from custom_filters import ActiveUsersFilter, UnbannedUsersFilter,\
         PassedCaptchaFilter, AntiFloodFilter, CommandPermissionsFilter
 from database import DatabaseManager
-from user_resolver import UserResolver, UserResolverError
+from user_resolver import UserResolver
+from custom_exceptions import UserResolverError
 from custom_dataclasses import User, Role
 from permissions import Permissions
 from poll_types import PollTypes
+from misc import user_join
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +55,15 @@ class CommandExecutor:
         self._updater = updater
         self._msg_broker = message_broker
         self._captcha_manager = captcha_manager
-        self._usr_resolver = UserResolver(config)
+        self._usr_resolver = UserResolver(database_manager, config)
 
         authed_user_filters = ActiveUsersFilter(self._db_man) &\
-            UnbannedUsersFilter(self._db_man) &\
-            AntiFloodFilter(self._db_man, config) &\
-            PassedCaptchaFilter(self._db_man, self._captcha_manager)
+            UnbannedUsersFilter(self._db_man, self._msg_broker) &\
+            AntiFloodFilter(self._db_man, config, self._msg_broker) &\
+            PassedCaptchaFilter(self._db_man,
+                                self._captcha_manager,
+                                config,
+                                self._msg_broker)
 
         self.commands = {
             'join': {
@@ -63,11 +71,13 @@ class CommandExecutor:
                 'permissions_required': Permissions.NONE,
                 'usage': '/join',
                 'filters': UnbannedUsersFilter(self._db_man) &
-                AntiFloodFilter(self._db_man, config) &
+                AntiFloodFilter(self._db_man, config, self._msg_broker) &
                 PassedCaptchaFilter(
                     self._db_man,
-                    self._captcha_manager
-                ),
+                    self._captcha_manager,
+                    config,
+                    self._msg_broker
+                ) & ~ActiveUsersFilter(self._db_man),
                 'callback': self.join
             },
             'quit': {
@@ -100,14 +110,14 @@ class CommandExecutor:
                 'be issued as a reply; The original sender will be banned in '
                 'this case',
                 'permissions_required': Permissions.SEND_CMD | Permissions.BAN,
-                'usage': '/ban [username|user_id] [reason]',
+                'usage': '/ban [username|user_id], [end_date], [reason]',
                 'filters': authed_user_filters,
                 'callback': self.ban
             },
             'unban': {
                 'description': 'Unbans a user from the chat.',
                 'permissions_required': Permissions.SEND_CMD | Permissions.BAN,
-                'usage': '/unban {username|user_id} [reason]',
+                'usage': '/unban {username|user_id}, [reason]',
                 'filters': authed_user_filters,
                 'callback': self.unban
             },
@@ -118,16 +128,24 @@ class CommandExecutor:
                 'this case',
                 'permissions_required': Permissions.SEND_CMD |
                 Permissions.KICK,
-                'usage': '/kick [username|user_id] [reason]',
+                'usage': '/kick [username|user_id], [reason]',
                 'filters': authed_user_filters,
                 'callback': self.kick
+            },
+            'delete': {
+                'description': 'Deletes the replied message',
+                'permissions_required': Permissions.SEND_CMD |
+                Permissions.DELETE_MESSAGE,
+                'usage': '/delete',
+                'filters': authed_user_filters,
+                'callback': self.delete
             },
 
             # ----------------------- [PERMISSIONS] ---------------------------
 
             'set_default_permissions': {
                 'description': 'Sets the default permissions for new users '
-                'Permissions are specified a space separated keywords. '
+                'Permissions are specified as comma separated keyphrases. '
                 'Issue /show_all_permissions for a complete list',
                 'permissions_required': Permissions.SEND_CMD |
                 Permissions.SET_DEFAULT_PERMISSIONS |
@@ -163,8 +181,7 @@ class CommandExecutor:
                 'permissions_required': Permissions.SEND_CMD |
                 Permissions.SET_USER_PERMISSIONS |
                 Permissions.SEND_ANON_POLL,
-                'usage': '/set_user_permissions [username|user_id] '
-                '{permissions}',
+                'usage': '/set_user_permissions [username|user_id]',
                 'filters': authed_user_filters,
                 'callback': self.set_user_permissions
             },
@@ -202,8 +219,7 @@ class CommandExecutor:
                 'Issue /show_all_permissions for a complete list',
                 'permissions_required': Permissions.SEND_CMD |
                 Permissions.CREATE_ROLE,
-                'usage': '/create_role {role_name} {role_power} '
-                '{role_permissions}',
+                'usage': '/create_role {role_name}, {role_power}',
                 'filters': authed_user_filters,
                 'callback': self.create_role
             },
@@ -223,6 +239,14 @@ class CommandExecutor:
                 'filters': authed_user_filters,
                 'callback': self.set_default_role
             },
+            'show_default_role': {
+                'description': 'Shows the default role.',
+                'permissions_required': Permissions.SEND_CMD |
+                Permissions.SET_DEFAULT_ROLE,
+                'usage': '/show_default_role',
+                'filters': authed_user_filters,
+                'callback': self.show_default_role
+            },
             'set_role_permissions': {
                 'description': 'Sets the role permissions. '
                 'Permissions are specified a space separated keywords. '
@@ -230,7 +254,7 @@ class CommandExecutor:
                 'permissions_required': Permissions.SEND_CMD |
                 Permissions.EDIT_ROLE | Permissions.SET_USER_PERMISSIONS |
                 Permissions.SEND_ANON_POLL,
-                'usage': '/set_role_permissions {role_name} {permissions}',
+                'usage': '/set_role_permissions {role_name}',
                 'filters': authed_user_filters,
                 'callback': self.set_role_permissions
             },
@@ -264,7 +288,7 @@ class CommandExecutor:
                 'whose power is equal or higher than your role',
                 'permissions_required': Permissions.SEND_CMD |
                 Permissions.SET_USER_ROLE,
-                'usage': '/set_user_role [username|user_id] [new_role]',
+                'usage': '/set_user_role [username|user_id], [new_role]',
                 'filters': authed_user_filters,
                 'callback': self.set_user_role
             },
@@ -277,7 +301,7 @@ class CommandExecutor:
                 'If none is specified the last 50 entries are displayed.',
                 'permissions_required': Permissions.SEND_CMD |
                 Permissions.VIEW_LOGS,
-                'usage': '/get_logs [start_date] [end_date]',
+                'usage': '/get_logs [start_date], [end_date]',
                 'filters': authed_user_filters,
                 'callback': self.get_logs
             },
@@ -299,9 +323,17 @@ class CommandExecutor:
                 'If none is specified the default banner will be used ',
                 'permissions_required': Permissions.SEND_CMD |
                 Permissions.SET_BANNERS,
-                'usage': '/set_banner {join|rejoin|quit} [banner message]',
+                'usage': '/set_banner {join|rejoin|quit}, [banner message]',
                 'filters': authed_user_filters,
                 'callback': self.set_banner
+            },
+            'show_banners': {
+                'description': 'Shows you the current banners',
+                'permissions_required': Permissions.SEND_CMD |
+                Permissions.SET_BANNERS,
+                'usage': '/show_banners',
+                'filters': authed_user_filters,
+                'callback': self.show_banners
             }
         }
 
@@ -334,472 +366,786 @@ class CommandExecutor:
     def join(self, update, context):
         tg_user = update.message.from_user
         # Creates a new user if it doesn't exist
-        usual = self._db_man.user_exists(tg_user.id)
-        user = User(self._db_man, tg_user.id)
-
-        join_banner = self._config['Banners']['JoinBanner']
-        rejoin_banner = self._config['Banners']['RejoinBanner']
-        if usual:
-            if not user.is_active:
-                logger.info(
-                    f'{user_log_str(update)} rejoined the chat'
-                )
-                update.message.reply_text(rejoin_banner)
-                user.join()
-        else:
-            logger.info(
-                f'{user_log_str(update)} joined the chat'
-            )
-            update.message.reply_text(join_banner)
-            default_role_name = self._config['Roles']['DefaultRole']
-            user.role = Role(self._db_man, default_role_name)
-            user.join()
-
+        user = User(self._db_man, tg_user)
+        user_join(user, self._config, self._msg_broker)
 
     @log_action(logger)
     def quit(self, update, context):
         tg_user = update.message.from_user
-        User(self._db_man, tg_user.id).quit()
+        user = User(self._db_man, tg_user)
 
-        quit_banner = self._config['Banners']['QuitBanner'] or \
-            'K, Bye'
-        update.message.reply_text(quit_banner)
+        self._msg_broker.send_or_forward_msg(
+            user,
+            self._config['Banners']['Quit']
+        )
+        user.quit()
         logger.info(
-            f'{user_log_str(update)} quit the chat'
+            f'{user} quit the chat'
         )
 
     @log_action(logger)
     def ping(self, update, context):
-        update.message.reply_text("pong")
+        self._msg_broker.send_or_forward_msg(
+            User(self._db_man, update.message.from_user),
+            'pong'
+        )
 
     @log_action(logger)
     def help(self, update, context):
         '''
         Sends the help text to the user based on what permissions he has
         '''
-        user = User(self._db_man,
-                    update.message.from_user.id,
-                    update.message.chat.id)
+        user = User(self._db_man, update.message.from_user)
         user_permissions = user.permissions
         msg_string = '*anon chat bot help page*\nParameters between curly '\
             'braces ({}) are compulsory, parameters between square brackets '\
-            '([]) are optional. When parameters are separated by a pipe (|) '\
+            '([]) are optional\. When parameters are separated by a pipe (|) '\
             'it means that only one of the proposed options should be '\
-            'passed.\nCommands:\n'
+            'passed\. Use a comma (,) to separate the arguments\.\nCommands:\n'
         for cmd_name, cmd_dict in self.commands.items():
             if cmd_dict['permissions_required'] in user_permissions:
                 msg_string += f'*{cmd_name}*:\nusage: `{cmd_dict["usage"]}`\n'\
                         f'```\n{cmd_dict["description"]}\n```\n'
 
-        for chunk in chunk_string(msg_string, MAX_MESSAGE_LENGTH):
-            update.message.reply_markdown(msg_string)
+        update.message.reply_markdown(msg_string)
 
-    # Admin commands
+    # ------------------------- [ADMIN COMMANDS] ------------------------------
 
     @log_action(logger)
     def ban(self, update, context):
-        def ban_and_send_reason(user: User, reason: str):
-            user.ban(reason)
-            self._updater.bot.send_message(
-                user.user_id,
-                f'You have been banned for: {reason}'
-            )
-
-        admin_user = User(self._db_man, update.message.from_user.id)
+        admin_user = User(self._db_man, update.message.from_user)
         replied_msg = update.message.reply_to_message
-        split_cmd = update.message.text.split()
+        split_cmd = split_cmd_line(update.message.text)
         split_cmd_len = len(split_cmd)
 
         try:
-            user_to_ban_id = self._usr_resolver\
+            user_to_ban = self._usr_resolver\
                 .acquire_target_user_from_cmd(update)
-            if replied_msg:
-                reason = split_cmd[1:]
-            else:
-                if split_cmd_len >= 2:
-                    reason = split_cmd[2:]
-                else:
-                    update.message.reply('Wrong number of parameters passed '
-                                         'to ban')
-                    return
 
-            user_to_ban = User(self._db_man, user_to_ban_id)
-            execute_if_hierarchy_is_respected(
-                admin_user, user_to_ban,
-                lambda: ban_and_send_reason(user_to_ban, reason),
-                update,
-                f'{user_log_str(replied_msg)} has been banned',
-                'You cannot ban your peers/superiors',
-                f'{user_log_str(replied_msg)} has been banned by '
-                f'{user_log_str(update)} for {reason}',
-                f'{user_log_str(update)} has tried to ban his '
-                f'peer/superior {split_cmd[1]}'
-            )
+            if user_to_ban.is_banned:
+                raise ValueError(f'{user_to_ban} is already banned')
+
+            ban_end_date = None
+            reason = ''
+            if replied_msg:
+                if split_cmd_len == 1:
+                    ban_end_date = dateparser.parse(
+                        split_cmd[0], settings={'TIMEZONE': 'UTC'}
+                    )
+                    if not ban_end_date:
+                        reason = split_cmd[0]
+
+                elif split_cmd_len == 2:
+                    ban_end_date = dateparser.parse(
+                        split_cmd[0], settings={'TIMEZONE': 'UTC'}
+                    )
+                    if not ban_end_date:
+                        raise ValueError(f'{split_cmd[0]} is an invalid date')
+                    reason = split_cmd[1]
+                else:
+                    raise ValueError('Wrong number of parameters passed '
+                                     'to ban')
+            else:
+                if split_cmd_len == 1:
+                    reason = ''
+                elif split_cmd_len == 2:
+                    ban_end_date = dateparser.parse(
+                        split_cmd[0], settings={'TIMEZONE': 'UTC'}
+                    )
+                    if not ban_end_date:
+                        reason = split_cmd[0]
+                elif split_cmd_len == 3:
+                    ban_end_date = dateparser.parse(
+                        split_cmd[1], settings={'TIMEZONE': 'UTC'}
+                    )
+                    if not ban_end_date:
+                        raise ValueError(f'{split_cmd[0]} is an invalid date')
+                    reason = split_cmd[2]
+                else:
+                    raise ValueError('Wrong number of parameters passed '
+                                     'to ban')
+
+            if is_hierarchy_respected(admin_user, user_to_ban):
+                if ban_end_date:
+                    user_to_ban.ban(f'{reason}\n' if reason else '',
+                                    ban_end_date)
+                else:
+                    user_to_ban.ban(f'{reason}\n' if reason else '')
+
+                if reason:
+                    if ban_end_date:
+                        user_banned_str = 'You have been banned until '\
+                            f'{ban_end_date} for: {reason}'
+                        admin_ban_str = f'{user_to_ban} has been banned until'\
+                            f' {ban_end_date}'
+                        log_str = f'{user_to_ban} has been banned until '\
+                            f'{ban_end_date} by {admin_user} for: {reason}'
+                    else:
+                        user_banned_str = f'You have been banned for: {reason}'
+                        admin_ban_str = f'{user_to_ban} has been banned'
+                        log_str = f'{user_to_ban} has been banned by '\
+                            f'{admin_user} for: {reason}'
+                else:
+                    if ban_end_date:
+                        user_banned_str = f'You have been banned until '\
+                            '{ban_end_date}'
+                        admin_ban_str = f'{user_to_ban} has been banned until'\
+                            f' {ban_end_date}'
+                        log_str = f'{user_to_ban} has been banned until '\
+                            f'{ban_end_date} by {admin_user}'
+                    else:
+                        user_banned_str = f'You have been banned'
+                        admin_ban_str = f'{user_to_ban} has been banned'
+                        log_str = f'{user_to_ban} has been banned by '\
+                            f'{admin_user}'
+
+                self._msg_broker.send_or_forward_msg(
+                    user_to_ban,
+                    escape_markdown_chars(user_banned_str)
+                )
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    escape_markdown_chars(admin_ban_str)
+                )
+                logger.info(log_str)
+            else:
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    'You cannot ban your peers/superiors'
+                )
+                logger.warning(f'{admin_user} has tried to ban his '
+                               f'peer/superior {user_to_ban}')
+
         except (UserResolverError, ValueError) as e:
-            update.message.reply_text(e)
+            self._msg_broker.send_or_forward_msg(
+                admin_user,
+                escape_markdown_chars(str(e))
+            )
 
     @log_action(logger)
     def unban(self, update, context):
-        admin_user = User(self._db_man, update.message.from_user.id)
-        split_cmd = update.message.text.split()
+        admin_user = User(self._db_man, update.message.from_user)
+        split_cmd = split_cmd_line(update.message.text)
         split_cmd_len = len(split_cmd)
 
         try:
-            user_to_unban_id = self._usr_resolver\
+            user_to_unban = self._usr_resolver\
                 .acquire_target_user_from_cmd(update)
 
-            if split_cmd_len >= 2:
-                reason = split_cmd[2:]
+            if split_cmd_len == 1:
+                reason = ''
+            elif split_cmd_len == 2:
+                reason = split_cmd[1:]
             else:
-                update.message.reply('Wrong number of parameters passed to'
-                                     ' unban')
-                return
+                raise ValueError(
+                    'Wrong number of parameters passed to unban'
+                )
 
-            user_to_unban = User(self._db_man, user_to_unban_id)
             if user_to_unban.is_banned:
                 # Forbid unbanning of higher ranks/peers to avoid
                 # takeovers from rogues admins/mods
-                execute_if_hierarchy_is_respected(
-                    admin_user, user_to_unban,
-                    lambda: user_to_unban.unban(reason),
-                    update,
-                    f'{split_cmd[1]} has been unbanned',
-                    'You cannot unban your peers/superiors',
-                    f'{split_cmd[1]} has been unbanned by '
-                    f'{user_log_str(update)} for {reason}',
-                    f'{user_log_str(update)} has tried to unban his '
-                    f'peer/superior {split_cmd[1]}'
-                )
+                if is_hierarchy_respected(admin_user, user_to_unban):
+                    admin_msg = f'{user_to_unban} has been unbanned'
+                    if reason:
+                        log_msg = f'{user_to_unban} has been unbanned by '\
+                            f'{admin_user} for {reason}'
+                        user_to_unban.unban(reason)
+                    else:
+                        log_msg = f'{user_to_unban} has been unbanned by '\
+                            f'{admin_user} for {reason}'
+                        user_to_unban.unban()
+
+                    self._msg_broker.send_or_forward_msg(
+                        admin_user,
+                        escape_markdown_chars(admin_msg)
+                    )
+                    logger.info(log_msg)
+                else:
+                    self._msg_broker.send_or_forward_msg(
+                        admin_user,
+                        'You cannot unban your peers/superiors'
+                    )
+                    logger.warning(f'{admin_user} has tried to unban his '
+                                   f'peer/superior {user_to_unban}' )
             else:
-                update.message.reply_text(
-                    f'{split_cmd[1]} is not banned'
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    escape_markdown_chars(
+                        f'{user_to_unban} is not banned'
+                    )
                 )
 
         except (UserResolverError, ValueError) as e:
-            update.message.reply_text(e)
+            update.message.reply_text(str(e))
 
     @log_action(logger)
     def kick(self, update, context):
-        def kick_and_send_reason(user: User, reason: str):
-            user.kick()
-            self._updater.bot.send_message(
-                user.user_id,
-                f'You have been kicked for: {reason}'
-            )
-
-        admin_user = User(self._db_man, update.message.from_user.id)
+        admin_user = User(self._db_man, update.message.from_user)
         replied_msg = update.message.reply_to_message
-        split_cmd = update.message.text.split()
+        split_cmd = split_cmd_line(update.message.text)
         split_cmd_len = len(split_cmd)
 
         try:
-            user_to_kick_id = self._usr_resolver\
-                .acquire_target_user_from_cmd(update)
+            reason = ''
 
             if replied_msg:
-                reason = split_cmd[1:]
+                reason = split_cmd[0:]
             else:
-                if split_cmd_len >= 2:
-                    reason = split_cmd[2:]
+                if split_cmd_len == 1:
+                    pass
+                elif split_cmd_len == 2:
+                    reason = split_cmd[1:]
                 else:
-                    update.message.reply('Wrong number of parameters passed to'
-                                         ' kick')
-                    return
-            user_to_kick = User(self._db_man, user_to_kick_id)
-            execute_if_hierarchy_is_respected(
-                admin_user, user_to_kick,
-                lambda: kick_and_send_reason(user_to_kick, reason),
-                update,
-                f'{user_log_str(replied_msg)} has been kicked',
-                'You cannot kick your peers/superiors',
-                f'{user_log_str(replied_msg)} has been kicked by '
-                f'{user_log_str(update)} for {reason}',
-                f'{user_log_str(update)} has tried to kick his '
-                f'peer/superior {split_cmd[1]}'
+                    raise ValueError('Wrong number of parameters passed to '
+                                     'kick')
+
+            user_to_kick = self._usr_resolver\
+                .acquire_target_user_from_cmd(update)
+            if is_hierarchy_respected(admin_user, user_to_kick):
+                user_to_kick.kick()
+                self._msg_broker.send_or_forward_msg(
+                    user_to_kick,
+                    escape_markdown_chars(
+                        f'You have been kicked for: {reason}'
+                    )
+                )
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    escape_markdown_chars(
+                        f'{user_to_kick} has been kicked'
+                    ),
+                )
+                logger.info(
+                    f'{user_to_kick} has been kicked by {admin_user} for '
+                    f'{reason}',
+                )
+            else:
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    'You cannot kick your peers/superiors',
+                )
+                logger.warning(
+                    f'{admin_user} has tried to kick his peer/superior '
+                    f'{user_to_kick}'
+                )
+        except (UserResolverError, ValueError) as e:
+            self._msg_broker.send_or_forward_msg(
+                admin_user,
+                escape_markdown_chars(str(e))
             )
 
-        except (UserResolverError, ValueError) as e:
-            update.message.reply_text(e)
+    @log_action(logger)
+    def delete(self, update, context):
+        admin_user = User(self._db_man, update.message.from_user)
+        replied_msg = update.message.reply_to_message
+        message_sender = self._db_man.get_message_sender(replied_msg)
+
+        if admin_user == message_sender or\
+           is_hierarchy_respected(admin_user, message_sender):
+            if replied_msg:
+                messages_to_delete = self._db_man.get_messages_to_delete(
+                    admin_user.id,
+                    replied_msg.message_id)
+                for msg in messages_to_delete:
+                    self._updater.bot.delete_message(
+                        msg['chat_id'], msg['message_id'])
+            else:
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    'You must reply to a message to delete it',
+                )
+        else:
+            self._msg_broker.send_or_forward_msg(
+                admin_user,
+                'You cannot delete messages from your superiors',
+            )
+            logger.warning(f'{admin_user} has tried to delete a message '
+                           '{replied_msg} sent by his superior '
+                           f'{message_sender}')
 
     @log_action(logger)
     def set_default_permissions(self, update, context):
-        sent_msg = update.message.reply_poll(
-            question='Select the new default permissions',
-            options=[x.replace('_', ' ') for x in self._config['Users']
-                     ['DefaultPermissions'].split()],
-            allows_multiple_answers=True,
-            open_period=20
-        )
-
-        self._db_man.register_admin_poll(
-            sent_msg.poll.poll_id,
-            PollTypes.SET_DEFAULT_PERMISSIONS,
-            update.message.from_user.id
+        admin_user = User(self._db_man, update.message.from_user)
+        create_and_register_poll(
+            self._db_man,
+            update,
+            'Select the new default permissions',
+            # Avoid privilege escalation by only allowing to set already owned
+            # permissions as default
+            [str(perm) for perm in admin_user.permissions],
+            PollTypes.SET_DEFAULT_PERMISSIONS
         )
 
     @log_action(logger)
     def show_default_permissions(self, update, context):
-        default_role = self._config['Roles']['DefaultRole']
-
-        update.message.reply_markdown(
-            '*The default permissions are*:\n{}'.format(
-                str(get_permissions_from_config_section(
-                    self._config['Roles'][default_role]['Permissions']
-                ))
-            )
+        admin_user = User(self._db_man, update.message.from_user)
+        default_role = Role(self._db_man, self._config['Roles']['DefaultRole'])
+        self._msg_broker.send_or_forward_msg(
+            admin_user,
+            f'*The default permissions are*:\n{str(default_role.permissions)}'
         )
 
     @log_action(logger)
     def show_all_permissions(self, update, context):
-        update.message.reply_markdown(
-            '*List of permissions:\n*{}'.format(
-                str(Permissions.ALL)
-            )
+        admin_user = User(self._db_man, update.message.from_user)
+        self._msg_broker.send_or_forward_msg(
+            admin_user,
+            f'*List of permissions:\n*{str(Permissions.ALL)}'
         )
 
     @log_action(logger)
     def set_user_permissions(self, update, context):
-        admin_user = User(self._db_man, update.message.from_user.id)
+        admin_user = User(self._db_man, update.message.from_user)
         try:
-            user_to_set_perms_id = self._usr_resolver\
+            user_to_set_perms = self._usr_resolver\
                 .acquire_target_user_from_cmd(update)
-            user_to_set_perms = User(self._db_man,
-                                         user_to_set_perms_id)
-            user_info = self._usr_resolver\
-                .get_user_info(user_to_waive_captcha_id)
-            execute_if_hierarchy_is_respected(
-                admin_user, user_to_set_perms,
-                lambda: create_and_register_poll(
+
+            if is_hierarchy_respected(admin_user, user_to_set_perms):
+                create_and_register_poll(
                     self._db_man,
                     update,
-                    f'Select the new user permissions for '
-                    'user_log_str(update)',
-                    [x.replace('_', ' ').replace('Permissions', '').lower()
-                     for x in Permissions]
-                ),
-                update,
-                f'{user_log_str(user_info)}\'s permissions has been changed '
-                'to {}',
-                'You cannot change the permissions of your peers/superiors',
-                f'{user_log_str(user_info)}\' permissions has been changed by '
-                f'{user_log_str(update)} to',
-                f'{user_log_str(update)} has tried to waive the captcha '
-                'of his'
-                f' peer/superior {user_log_str(user_info)}'
-            )
-
+                    'Select the new user permissions for '
+                    f'{user_to_set_perms}',
+                    # Avoid privilege escalation by only allowing to set
+                    # already owned permissions as default
+                    [str(perm) for perm in admin_user.permissions],
+                    PollTypes.SET_USER_PERMISSIONS
+                )
+            else:
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    'You cannot change the permissions of your peers/superiors'
+                )
+                logger.warning(
+                    f'{admin_user} has tried to change the permissions of his '
+                    'peer/superior {user_to_set_perms}'
+                )
         except (UserResolverError, ValueError) as e:
-            update.message.reply_text(e)
+            self._msg_broker.send_or_forward_msg(
+                admin_user,
+                escape_markdown_chars(str(e)),
+            )
 
     @log_action(logger)
     def waive_captcha(self, update, context):
-        def update_passed_status(user: User, new_status: bool):
-            user.captcha_status.passed = new_status
-
-        admin_user = User(self._db_man, update.message.from_user.id)
+        admin_user = User(self._db_man, update.message.from_user)
 
         try:
-            user_to_waive_captcha_id = self._usr_resolver\
+            user_to_waive_captcha = self._usr_resolver\
                 .acquire_target_user_from_cmd(update)
-            user_to_waive_captcha = User(self._db_man,
-                                         user_to_waive_captcha_id)
-            user_info = self._usr_resolver\
-                .get_user_info(user_to_waive_captcha_id)
-            execute_if_hierarchy_is_respected(
-                admin_user, user_to_waive_captcha,
-                lambda: update_passed_status(user_to_waive_captcha, True),
-                update,
-                f'{user_log_str(user_info)}\'s captcha has been waived',
-                'You cannot waive the captcha of your peers/superiors',
-                f'{user_log_str(user_info)}\' captcha has been waived by '
-                f'{user_log_str(update)}',
-                f'{user_log_str(update)} has tried to waive the captcha '
-                'of his'
-                f' peer/superior {user_log_str(user_info)}'
-            )
+            if is_hierarchy_respected(admin_user, user_to_waive_captcha):
+                user_to_waive_captcha.captcha_status.passed = True
+
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    escape_markdown_chars(
+                        f'{user_to_waive_captcha}\'s captcha has been waived'
+                    )
+                )
+                logger.info(
+                    f'{user_to_waive_captcha}\' captcha has been waived by '
+                    f'{admin_user}'
+                )
+            else:
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    'You cannot waive the captcha of your peers/superiors'
+                )
+                logger.warning(
+                    f'{admin_user} has tried to waive the captcha '
+                    f'of his peer/superior {user_to_waive_captcha}'
+                )
 
         except (UserResolverError, ValueError) as e:
-            update.message.reply_text(e)
+            self._msg_broker.send_or_forward_msg(
+                admin_user,
+                escape_markdown_chars(str(e)),
+            )
 
     @log_action(logger)
     def reset_captcha(self, update, context):
-        def update_passed_status(user: User, new_status: bool):
-            user.captcha_status.passed = new_status
-
-        admin_user = User(self._db_man, update.message.from_user.id)
-        replied_msg = update.message.reply_to_message
-        split_cmd = update.message.text.split()
-        split_cmd_len = len(split_cmd)
+        admin_user = User(self._db_man, update.message.from_user)
 
         try:
-            user_to_reset_captcha_id = self._usr_resolver\
+            user_to_reset_captcha = self._usr_resolver\
                 .acquire_target_user_from_cmd(update)
 
-            user_to_reset_captcha = User(self._db_man,
-                                         user_to_reset_captcha_id)
+            if is_hierarchy_respected(admin_user, user_to_reset_captcha):
+                user_to_reset_captcha.captcha_status.passed = False
+                user_to_reset_captcha.captcha_status.failed_attempts = 0
 
-            user_info = self._usr_resolver\
-                .get_user_info(user_to_reset_captcha_id)
-            execute_if_hierarchy_is_respected(
-                admin_user, user_to_reset_captcha,
-                lambda: update_passed_status(user_to_reset_captcha, False),
-                update,
-                f'{user_log_str(user_info)}\'s captcha has been reset',
-                'You cannot reset the captcha of your peers/superiors',
-                f'{user_log_str(user_info)}\' captcha has been reset by '
-                f'{user_log_str(update)}',
-                f'{user_log_str(update)} has tried to reset the captcha of his'
-                f' peer/superior {split_cmd[1]}'
-            )
-
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    escape_markdown_chars(
+                        f'{user_to_reset_captcha}\'s captcha has been waived'
+                    )
+                )
+                logger.info(
+                    f'{user_to_reset_captcha}\' captcha has been waived by '
+                    f'{admin_user}'
+                )
+            else:
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    'You cannot waive the captcha of your peers/superiors'
+                )
+                logger.warning(
+                    f'{admin_user} has tried to waive the captcha '
+                    f'of his peer/superior {user_to_reset_captcha}'
+                )
         except (UserResolverError, ValueError) as e:
-            update.message.reply_text(e)
+            self._msg_broker.send_or_forward_msg(
+                admin_user,
+                escape_markdown_chars(str(e)),
+            )
 
     @log_action(logger)
     def create_role(self, update, context):
-        admin_user = User(self._db_man, update.message.from_user.id)
-        split_cmd = update.message.text.split()
+        admin_user = User(self._db_man, update.message.from_user)
+        split_cmd = split_cmd_line(update.message.text)
         split_cmd_len = len(split_cmd)
-        user_to_reset_captcha_id = None
 
-        if split_cmd_len == 3:
-            pass
-        else:
-            update.message.reply('Wrong number of parameters passed to '
-                                 'create role captcha')
-            return
-
-        raise NotImplementedError
+        try:
+            if split_cmd_len == 2 and split_cmd[1]:
+                role_name = split_cmd[0]
+                role_power = int(split_cmd[1])
+                if self._db_man.does_role_exist(role_name):
+                    self._msg_broker.send_or_forward_msg(
+                        admin_user,
+                        escape_markdown_chars(
+                            f'Role {role_name} already exists'
+                        )
+                    )
+                elif role_power > admin_user.role.power:
+                    self._msg_broker.send_or_forward_msg(
+                        admin_user,
+                        'You cannot create role whose power is higher than '
+                        'yours'
+                    )
+                    logger.warning(f'{admin_user} has tried to create a role '
+                                   'whose power is higher than his')
+                else:
+                    Role(self._db_man, role_name, role_power)
+                    # Sets role's permissions
+                    # Max 10 options per poll
+                    create_and_register_poll(
+                        self._db_man,
+                        update,
+                        'Select the role\'s permissions',
+                        # Avoid privilege escalation by only allowing to set
+                        # already owned permissions
+                        [str(perm) for perm in admin_user.permissions],
+                        PollTypes.SET_ROLE_PERMISSIONS
+                    )
+            else:
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    'Wrong number of parameters passed to create role'
+                )
+        except ValueError as e:
+            self._msg_broker.send_or_forward_msg(
+                admin_user,
+                escape_markdown_chars(str(e)),
+            )
 
     @log_action(logger)
     def show_roles(self, update, context):
-        update.message.reply_text(
-            "\n\n".join(
-                map(lambda x: str(x), self._db_man.show_roles())
-            )
+        admin_user = User(self._db_man, update.message.from_user)
+        msg = '*Current roles:*\n'
+        for role in self._db_man.show_roles():
+            role_str = str(role)
+            role_name, role_permissions = role_str.split(':')
+            msg += f'*{escape_markdown_chars(role_name)}*: '\
+                f'{escape_markdown_chars(role_permissions)}\n\n'
+        self._msg_broker.send_or_forward_msg(
+            admin_user,
+            msg
         )
 
     @log_action(logger)
     def set_default_role(self, update, context):
-        split_cmd = update.message.text.split()
+        admin_user = User(self._db_man, update.message.from_user)
+        split_cmd = split_cmd_line(update.message.text)
         split_cmd_len = len(split_cmd)
 
-        if split_cmd_len == 2:
-            if self._db_man.does_role_exist(split_cmd[1]):
-                admin_user = User(self._db_man, update.message.from_user.id)
-                new_role = Role(self._db_man, split_cmd[1])
-                if admin_user.role.power > new_role.power:
-                    if new_role.permissions in admin_user.permissions:
-                        self._config['Roles']['DefaultRole'] = split_cmd[1]
-                    else:
-                        update.message.reply_text(
-                            'You can\'t set a role whose permissions are '
-                            'more than yours'
+        if split_cmd_len == 1:
+            if self._db_man.does_role_exist(split_cmd[0]):
+                new_role = Role(self._db_man, split_cmd[0])
+                # Only admins with higher power than set a role as default
+                if is_role_hierarchy_respected(admin_user, new_role):
+                    self._config['Roles']['DefaultRole'] = split_cmd[0]
+                    self._config.write()
+                    self._msg_broker.send_or_forward_msg(
+                        admin_user,
+                        escape_markdown_chars(
+                            f'Default role set to {new_role}'
                         )
-                        logger.warning(
-                            f'{user_log_str(update)} has tried to set a role '
-                            'whose permissions are higher than his'
-                        )
+                    )
+                    logger.info(
+                        f'{admin_user} has set the default role to {new_role}'
+                    )
                 else:
-                    update.message.reply_text(
-                        'You can\'t set a role whose power is higher '
-                        'than yours as default'
+                    self._msg_broker.send_or_forward_msg(
+                        admin_user,
+                        'You can\'t set a role whose power '
+                        'or permissions are greater than yours as default'
                     )
                     logger.warning(
                         f'{user_log_str(update)} has tried to set a role '
-                        'whose power is higher than his as default role'
+                        'whose power or permissions are greater than his as '
+                        'default'
                     )
             else:
-                update.message.reply(f'Role {split_cmd[1]} does not exist. '
-                                     'create it with /create_role')
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    escape_markdown_chars(
+                        f'Role {split_cmd[0]} does not exist. '
+                        'create it with /create_role'
+                    )
+                )
         else:
-            update.message.reply('Wrong number of parameters passed to '
-                                 'create role captcha')
+
+            self._msg_broker.send_or_forward_msg(
+                admin_user,
+                escape_markdown_chars(
+                    'Wrong number of parameters passed to /set_default_role'
+                )
+            )
+
+    @log_action(logger)
+    def show_default_role(self, update, context):
+        admin_user = User(self._db_man, update.message.from_user)
+
+        default_role = self._config['Roles']['DefaultRole']
+        self._msg_broker.send_or_forward_msg(
+            admin_user,
+            '*Default role is*: '
+            f'{escape_markdown_chars(str(Role(self._db_man, default_role)))}'
+        )
 
     @log_action(logger)
     def set_role_permissions(self, update, context):
-        admin_user = User(self._db_man, update.message.from_user.id)
-        split_cmd = update.message.text.split()
+        admin_user = User(self._db_man, update.message.from_user)
+        split_cmd = split_cmd_line(update.message.text)
         split_cmd_len = len(split_cmd)
 
-        if split_cmd_len == 2:
-            raise NotImplementedError
-
+        if split_cmd_len == 1:
+            if self._db_man.does_role_exist(split_cmd[0]):
+                new_role = Role(self._db_man, split_cmd[0])
+                # Only admins with higher power than set a role as default
+                if is_role_hierarchy_respected(admin_user, new_role):
+                    # Sets role's permissions
+                    create_and_register_poll(
+                        self._db_man,
+                        update,
+                        'Select the role\'s permissions',
+                        # Avoid privilege escalation by only allowing to
+                        # set already owned permissions
+                        [str(perm) for perm in admin_user.permissions],
+                        PollTypes.SET_ROLE_PERMISSIONS
+                    )
+                else:
+                    self._msg_broker.send_or_forward_msg(
+                        admin_user,
+                        'You can\'t edit a role whose power '
+                        'or permissions are greater than yours\.'
+                    )
+                    logger.warning(
+                        f'{user_log_str(update)} has tried to edit a role '
+                        'whose power or permissions are greater than his'
+                    )
+            else:
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    f'Role {split_cmd[0]} does not exist\. '
+                    'create it with /create_role'
+                )
         else:
-            update.message.reply('Wrong number of parameters passed to '
-                                 'create role captcha')
-            return
-
-
-        raise NotImplementedError
+            self._msg_broker.send_or_forward_msg(
+                admin_user,
+                escape_markdown_chars(
+                    'Wrong number of parameters passed to '
+                    '/set_role_permissions'
+                )
+            )
 
     @log_action(logger)
     def set_role_power(self, update, context):
-        admin_user = User(self._db_man, update.message.from_user.id)
-        split_cmd = update.message.text.split()
+        split_cmd = split_cmd_line(update.message.text)
         split_cmd_len = len(split_cmd)
-        user_to_reset_captcha_id = None
 
         if split_cmd_len == 2:
-            raise NotImplementedError
-            pass
+            if self._db_man.does_role_exist(split_cmd[0]):
+                admin_user = User(self._db_man, update.message.from_user)
+                role = Role(self._db_man, split_cmd[0])
+                try:
+                    new_power = int(split_cmd[1])
+                    # Only admins with higher power than set a role as default
+                    if admin_user.role.power > role.power:
+                        if 0 <= new_power < admin_user.role.power:
+                            role.power = new_power
+                        else:
+                            self._msg_broker.send_or_forward_msg(
+                                admin_user,
+                                f'Invalid power value: {new_power}'
+                            )
+                    else:
+                        self._msg_broker.send_or_forward_msg(
+                            admin_user,
+                            'You can\'t edit a role whose power is higher '
+                            'than yours'
+                        )
+                        logger.warning(
+                            f'{admin_user} has tried to edit a role '
+                            'whose power is higher than his'
+                        )
+                except ValueError as e:
+                    update.message.reply(e)
+            else:
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    f'Role {split_cmd[0]} does not exist\. '
+                    'create it with /create_role'
+                )
         else:
-            update.message.reply('Wrong number of parameters passed to '
-                                 'create role captcha')
-            return
-
-
-        raise NotImplementedError
+            self._msg_broker.send_or_forward_msg(
+                admin_user,
+                escape_markdown_chars(
+                    'Wrong number of parameters passed to /set_role_power'
+                )
+            )
 
     @log_action(logger)
     def delete_role(self, update, context):
-        admin_user = User(self._db_man, update.message.from_user.id)
-        split_cmd = update.message.text.split()
+        admin_user = User(self._db_man, update.message.from_user)
+        split_cmd = split_cmd_line(update.message.text)
         split_cmd_len = len(split_cmd)
-        user_to_reset_captcha_id = None
 
-        if split_cmd_len == 3:
-            raise NotImplementedError
-
+        if split_cmd_len == 1 and split_cmd[0]:
+            if self._db_man.does_role_exist(split_cmd[0]):
+                role_to_delete = Role(self._db_man, split_cmd[0])
+                # Only admins with higher power than set a role as default
+                if admin_user.role.power > role_to_delete.power:
+                    role_to_delete.delete()
+                    self._msg_broker.send_or_forward_msg(
+                        admin_user,
+                        escape_markdown_chars(
+                            f'Deleted role: {role_to_delete}'
+                        )
+                    )
+                    logger.info(
+                        f'{admin_user} has deleted the role: {role_to_delete}'
+                    )
+                else:
+                    self._msg_broker.send_or_forward_msg(
+                        admin_user,
+                        'You can\'t delete a role whose power is higher '
+                        'or equal to yours'
+                    )
+                    logger.warning(
+                        f'{admin_user} has tried to delete a role '
+                        'whose power is higher or equal to his'
+                    )
+            else:
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    escape_markdown_chars(
+                        f'Role {split_cmd[0]} does not exist. '
+                        'create it with /create_role'
+                    )
+                )
         else:
-            update.message.reply('Wrong number of parameters passed to '
-                                 'create role captcha')
-            return
-
-
-        raise NotImplementedError
+            self._msg_broker.send_or_forward_msg(
+                admin_user,
+                escape_markdown_chars(
+                    'Wrong number of parameters passed to /delete_role'
+                )
+            )
 
     @log_action(logger)
     def set_user_role(self, update, context):
-        admin_user = User(self._db_man, update.message.from_user.id)
-        split_cmd = update.message.text.split()
+        admin_user = User(self._db_man, update.message.from_user)
+        replied_msg = update.message.reply_to_message
+        split_cmd = split_cmd_line(update.message.text)
         split_cmd_len = len(split_cmd)
-        user_to_reset_captcha_id = None
 
-        if split_cmd_len == 3:
-            raise NotImplementedError
-            pass
-        else:
-            update.message.reply('Wrong number of parameters passed to '
-                                 'create role captcha')
-            return
+        try:
+            target_user = self._usr_resolver\
+                .acquire_target_user_from_cmd(update)
 
+            if replied_msg and split_cmd_len == 1:
+                new_role_name = split_cmd[0].strip()
+            elif split_cmd_len == 2:
+                new_role_name = split_cmd[1].strip()
+            else:
+                raise ValueError(
+                    'Wrong number of parameters passed '
+                    'to /set_user_role'
+                )
 
-        raise NotImplementedError
+            if self._db_man.does_role_exist(new_role_name):
+                new_role = Role(self._db_man, new_role_name)
+                if is_hierarchy_respected(admin_user, target_user):
+                    if is_role_hierarchy_respected(admin_user, new_role):
+                        target_user.role = new_role
+                        self._msg_broker.send_or_forward_msg(
+                            admin_user,
+                            escape_markdown_chars(
+                                f'{target_user}\'s role has been set to '
+                                f'{new_role}'
+                            )
+                        )
+                        logger.info(
+                            f'{target_user}\'s role has been set to '
+                            f'{new_role} by {admin_user}'
+                        )
+                    else:
+                        self._msg_broker.send_or_forward_msg(
+                            admin_user,
+                            'You cannot assign roles whose permissions/power '
+                            'are greater than yours'
+                        )
+                        logger.warning(
+                            f'{admin_user} has tried to assign a role '
+                            f'({new_role}) with '
+                            'greater power/permissions than his')
+                else:
+                    self._msg_broker.send_or_forward_msg(
+                        admin_user,
+                        'You cannot change the role of your peers/superiors'
+                    )
+                    logger.warning(
+                        f'{admin_user} has tried to set the role of his '
+                        f'peer/superior {target_user} to {new_role}')
+            else:
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    escape_markdown_chars(
+                        f'Role {new_role_name} does not exist '
+                        'create it with /create_role'
+                    )
+                )
+        except (UserResolverError, ValueError) as e:
+            self._msg_broker.send_or_forward_msg(
+                admin_user,
+                escape_markdown_chars(str(e))
+            )
 
     @log_action(logger)
     def get_logs(self, update, context):
-        admin_user = User(self._db_man, update.message.from_user.id)
+        admin_user = User(self._db_man, update.message.from_user)
         split_cmd = update.message.text.split()
         split_cmd_len = len(split_cmd)
-        user_to_reset_captcha_id = None
 
         if split_cmd_len < 4:
             raise NotImplementedError
 
         else:
-            update.message.reply('Wrong number of parameters passed to '
-                                 'create role captcha')
+            self._msg_broker.send_or_forward_msg(
+                admin_user,
+                'Wrong number of parameters passed to '
+                'create role captcha'
+            )
             return
 
 
@@ -807,27 +1153,77 @@ class CommandExecutor:
 
     @log_action(logger)
     def view_user_info(self, update, context):
-        admin_user = User(self._db_man, update.message.from_user.id)
-        split_cmd = update.message.text.split()
-        split_cmd_len = len(split_cmd)
-        user_to_reset_captcha_id = None
+        admin_user = User(self._db_man, update.message.from_user)
+        try:
+            user = self._usr_resolver.acquire_target_user_from_cmd(update)
+            join_log_str = escape_markdown_chars(
+                "\n".join(map(lambda x: str(x), user.join_quit_log))
+            )
+            ban_log_str = escape_markdown_chars(
+                "\n".join(map(lambda x: str(x), user.ban_log))
+            )
+            msg = '*User info*\n'\
+                f'*First name*: {escape_markdown_chars(user.first_name)}\n'\
+                f'*Last name*: {escape_markdown_chars(user.last_name)}\n'\
+                f'*Username*: @{escape_markdown_chars(user.username)}\n'\
+                f'*ID*: {user.id}\n'\
+                f'*Role*: {escape_markdown_chars(str(user.role))}\n'\
+                '*Permissions*: '\
+                f'{escape_markdown_chars(str(user.permissions))}\n'\
+                f'*Join log*: \n{join_log_str}\n'\
+                f'*Ban log*: \n{ban_log_str}\n'
 
-        if split_cmd_len < 3:
-            raise NotImplementedError
-            pass
-        else:
-            update.message.reply('Wrong number of parameters passed to '
-                                 'create role captcha')
-            return
-
-        raise NotImplementedError
+            self._msg_broker.send_or_forward_msg(
+                admin_user,
+                msg
+            )
+        except (ValueError, UserResolverError) as e:
+            self._msg_broker.send_or_forward_msg(
+                admin_user,
+                escape_markdown_chars(str(e))
+            )
 
     @log_action(logger)
     def set_banner(self, update, context):
-        admin_user = User(self._db_man, update.message.from_user.id)
-        split_cmd = update.message.text.split()
-        split_cmd_len = len(split_cmd)
+        admin_user = User(self._db_man, update.message.from_user)
+        split_cmd = split_cmd_line(update.message.text)
+        split_cmd = [split_cmd[0], ",".join(split_cmd[1:]).strip()]
 
+        if split_cmd[1]:
+            if split_cmd[0] in self._config['Banners']:
+                self._config['Banners'][split_cmd[0]] = split_cmd[1]
+                self._config.write()
 
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    escape_markdown_chars(
+                        f'{split_cmd[0]} set to: {split_cmd[1]}'
+                    )
+                )
+            else:
+                self._msg_broker.send_or_forward_msg(
+                    admin_user,
+                    escape_markdown_chars(
+                        f'{split_cmd[0]} is an invalid banner name. click '
+                        '/show_banners to show the current banners'
+                    )
+                )
+        else:
+            self._msg_broker.send_or_forward_msg(
+                admin_user,
+                'Wrong number of parameters passed to '
+                'set banner'
+            )
 
-        raise NotImplementedError
+    @log_action(logger)
+    def show_banners(self, update, context):
+        admin_user = User(self._db_man, update.message.from_user)
+        msg = '*Current banners:*\n'
+
+        for banner_name, value in self._config['Banners'].items():
+            msg += f'*{banner_name}*: {value}\n'
+
+        self._msg_broker.send_or_forward_msg(
+            admin_user,
+            msg
+        )
